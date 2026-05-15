@@ -1,5 +1,5 @@
 export const sleep = (ms: number) => {
-    new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 export const calculateHumanDelay = (text: string): number => {

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express'
 import { neppoWebhookHandler } from './webhook/neppo-handler';
 import { neppoWsClient } from './integrations/neppo-ws-client';
+import { neppoPresence } from './integrations/neppo-presence';
 
 const app = express();
 const PORT = process.env.PORT || 5173;
@@ -20,4 +21,6 @@ app.listen(Number(PORT), '127.0.0.1', async () => {
     if (logado) {
         neppoWsClient.connectWebSocket();
     }
+    await neppoPresence.start();
+
 });

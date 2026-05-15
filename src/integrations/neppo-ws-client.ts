@@ -3,11 +3,20 @@
 import { Client } from "@stomp/stompjs";
 import WebSocket from "ws";
 import { processAIMessage } from '../agents/graph';
+import { MessageDebouncer } from '../utils/message-debouncer';
 
 export class NeppoWsClient {
     private cookieSession: string = '';
     private stompClient: Client | null = null;
     private botResource = Math.random().toString(36).substring(2, 10);
+    private debouncer = new MessageDebouncer(async (phoneNumber, fullMessage, sessionId) => {
+        try {
+            const AIResponse = await processAIMessage(phoneNumber, fullMessage);
+            this.sendMessage(AIResponse, sessionId);
+        } catch (error) {
+            console.log('❌ Erro no LangGraph:', error);
+        }
+    })
 
     async login() {
         console.log('🔄 Tentando fazer login como Agente Fantasma...');
@@ -96,13 +105,9 @@ export class NeppoWsClient {
                 const phoneNumber = payload.externalProtocol;
                 const sessionId = payload.sessionId;
                 console.log(`\n📩 MENSAGEM DO CLIENTE [${phoneNumber}]: ${clientText}`);
+                this.debouncer.add(phoneNumber, clientText, sessionId);
 
-                try {
-                    const AIResponse = await processAIMessage(phoneNumber, clientText);
-                    this.sendMessage(AIResponse, sessionId);
-                } catch (error) {
-                    console.log('❌ Erro no LangGraph:', error);
-                }
+
             }
         });
 
@@ -138,10 +143,11 @@ export class NeppoWsClient {
         };
 
         this.stompClient.publish({
-            destination: '/app/chat.private.group.TesteTI',
+            destination: '/app/chat.private.group.RH',
             body: JSON.stringify(payload)
         });
     }
+
 }
 
 export const neppoWsClient = new NeppoWsClient();

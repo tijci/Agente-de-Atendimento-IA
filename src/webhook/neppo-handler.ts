@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { processAIMessage } from '../agents/graph';
 import { logger } from '../utils/logger';
-import { neppoClient } from '../integrations/neppo-client';
 import { neppoWsClient } from '../integrations/neppo-ws-client';
 export const neppoWebhookHandler = async (req: Request, res: Response) => {
     const payload = req.body;
