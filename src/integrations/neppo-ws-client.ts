@@ -4,6 +4,7 @@ import { Client } from "@stomp/stompjs";
 import WebSocket from "ws";
 import { processAIMessage } from '../agents/graph';
 import { MessageDebouncer } from '../utils/message-debouncer';
+import { translator } from '../utils/message-translator';
 
 export class NeppoWsClient {
     private cookieSession: string = '';
@@ -101,7 +102,7 @@ export class NeppoWsClient {
             const payload = JSON.parse(frame.body);
 
             if (payload.sendBy === 'user' && payload.originUser === 'WHATSAPP') {
-                const clientText = payload.message;
+                const clientText = await translator.translate(payload);
                 const phoneNumber = payload.externalProtocol;
                 const sessionId = payload.sessionId;
                 console.log(`\n📩 MENSAGEM DO CLIENTE [${phoneNumber}]: ${clientText}`);
