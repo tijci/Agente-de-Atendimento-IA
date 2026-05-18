@@ -1,11 +1,10 @@
 export class MessageTranslator {
     async translate(payload: any): Promise<string> {
-        console.log('🔍 PAYLOAD BRUTO RECEBIDO:', JSON.stringify(payload, null, 2));
         const text = payload.message || '';
         const isAudio = text.includes('.oga') || text.includes('.ogg') || text.includes('.mp3') || payload.contentType === 'AUDIO' || payload.type === 'AUDIO';
         const isImage = text.includes('.jpg') || text.includes('.png') || text.includes('.webp');
         if (isAudio) return await this.transcribeAudio(text);
-        if (isImage) return `[IMAGEM RECEBIDA] Link: ${text} (Busca visual pendente)`;
+        if (isImage) return `[FOTO ENVIADA PELO CLIENTE] O cliente enviou uma foto para busca de imóveis visualmente semelhantes no catálogo. Use a ferramenta de busca de imóveis passando esta URL exatamente no parâmetro 'foto_url': ${text}`;
         return text;
     }
 
@@ -42,6 +41,8 @@ export class MessageTranslator {
             return `[FALHA DE ÁUDIO] Link: ${url}`;
         }
     }
+
+
 }
 
 export const translator = new MessageTranslator();
