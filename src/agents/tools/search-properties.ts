@@ -2,6 +2,8 @@ import { tool } from "@langchain/core/tools";
 import { z } from 'zod';
 import Papa from 'papaparse';
 import { pipeline, RawImage, CLIPModel, AutoProcessor, AutoTokenizer } from "@xenova/transformers"
+import fs from 'fs';
+import path from 'path';
 
 
 const searchSchema = z.object({
@@ -98,7 +100,7 @@ function extrairEquivalentesNumericos(texto: string): string {
 }
 
 const STOP_WORDS = new Set([
-    "vi", "um", "para", "alugar", "na", "rua", "de", "perto", "da", "no", "esta", "disponivel", 
+    "vi", "um", "para", "alugar", "na", "rua", "de", "perto", "da", "no", "esta", "disponivel",
     "o", "a", "em", "com", "que", "uma", "uns", "do", "dos", "das", "sobre", "como", "mais", "tem",
     "gostaria", "ver", "casa", "apartamento", "terreno", "apto", "lote", "chacara", "sitio", "sobrado"
 ]);
@@ -111,61 +113,138 @@ async function extrairVetorImagem(imageUrl: string): Promise<number[]> {
     return Array.from(output.image_embeds.data) as number[];
 }
 
+const CACHE_PATH = path.join(process.cwd(), 'data', 'vetores-cache.json');
+
 async function sincronizarVetores() {
     if (vetorDeImoveis.length > 0 || isCarregando) return;
     isCarregando = true;
-    console.log("📥 [SISTEMA] Acordando IA Local (baixando modelo open-source)...");
-    extractor = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2');
-    clipModel = await CLIPModel.from_pretrained('Xenova/clip-vit-base-patch32');
-    clipProcessor = await AutoProcessor.from_pretrained('Xenova/clip-vit-base-patch32');
-    clipTokenizer = await AutoTokenizer.from_pretrained('Xenova/clip-vit-base-patch32');
-    console.log("📥 [SISTEMA] Lendo CSV e vetorizando imóveis de Locação (Pode levar alguns segundos na 1ª vez)...");
+
+    let cache: { [key: string]: { vetorTexto: number[], vetoresImagens: number[][], textoParaVetor: string, imagensHash: string } } = {};
+    try {
+        if (fs.existsSync(CACHE_PATH)) {
+            const cacheContent = fs.readFileSync(CACHE_PATH, 'utf-8');
+            cache = JSON.parse(cacheContent);
+            console.log("📂 [SISTEMA] Cache de vetores locais carregado com sucesso!");
+        }
+    } catch (e) {
+        console.warn("⚠️ Não foi possível ler o arquivo de cache de vetores:", e);
+    }
+
+    console.log("📥 [SISTEMA] Lendo CSV de imóveis...");
     const response = await fetch("https://tijci.github.io/auto-xml-ksi-format/docs/imoveis.csv");
     const csvText = await response.text();
     const parsed = Papa.parse(csvText, { header: true, skipEmptyLines: true });
 
-    const imoveisLocacao = parsed.data.filter((i: any) => i.tipo_transacao === "For Rent") as any[];
-    // Transforma cada imóvel em Matemática
-    for (const imovel of imoveisLocacao) {
-        // Criamos o 'Resumo' que a IA vai interpretar
-        let vectorImage: number[] = [];
+    const imoveisFiltrados = parsed.data.filter((i: any) => i.tipo_transacao === "For Rent" || i.tipo_transacao === "For Sale") as any[];
+    console.log(`📥 [SISTEMA] Processando ${imoveisFiltrados.length} imóveis de Locação...`);
+
+    let cacheAlterado = false;
+
+    for (const imovel of imoveisFiltrados) {
+        const idOriginal = imovel.id || "";
+        const idLimpo = idOriginal.replace(/\D/g, '');
+
         const descResumida = imovel.descricao ? imovel.descricao.substring(0, 800) : "";
-        if (imovel.imagem_url) {
-            try {
-                vectorImage = await extrairVetorImagem(imovel.imagem_url);
-            } catch (err) {
-                console.warn(`⚠️ Não foi possível carregar a imagem do imóvel ${imovel.id}:`, err);
-            }
-        }
 
         const ruaEndereco = imovel.endereco || "";
         const numEndereco = imovel.numero ? ` nº ${imovel.numero}` : "";
         const compEndereco = imovel.complemento ? ` apto/sala ${imovel.complemento}` : "";
         const condominioEmpreendimento = imovel.empreendimento ? ` Condomínio/Edifício: ${imovel.empreendimento}.` : "";
+        const transacaoTexto = imovel.tipo_transacao === "For Rent" ? "Aluguel / Locação" : "Venda / Compra";
 
-        const textoParaVetor = `Imóvel: ${imovel.tipo_imovel}. Cidade: ${imovel.cidade}. Bairro: ${imovel.bairro}. Endereço: ${ruaEndereco}${numEndereco}${compEndereco}.${condominioEmpreendimento} Quartos: ${imovel.quartos}. Título: ${imovel.titulo}. Descrição: ${descResumida}`;
+        const textoParaVetor = `Imóvel: ${imovel.tipo_imovel}. Cidade: ${imovel.cidade}. Operação: ${transacaoTexto}. Bairro: ${imovel.bairro}. Endereço: ${ruaEndereco}${numEndereco}${compEndereco}.${condominioEmpreendimento} Quartos: ${imovel.quartos}. Título: ${imovel.titulo}. Descrição: ${descResumida}`;
 
-        const output = await extractor(textoParaVetor, { pooling: 'mean', normalize: true });
-        const vetor = Array.from(output.data) as number[];
+        const fotosAdicionaisList = imovel.fotos_adicionais ? imovel.fotos_adicionais.split("|") : [];
+        const todasFotos = [imovel.imagem_url, ...fotosAdicionaisList].filter(Boolean).slice(0, 6); // Limite de 6 fotos por imóvel
+        const imagensHash = todasFotos.join("|");
+
+        let vetor: number[] = [];
+        let vectorImages: number[][] = [];
+
+        const cached = cache[idOriginal] || cache[idLimpo];
+        const textUnchanged = cached && cached.textoParaVetor === textoParaVetor;
+        const imagesUnchanged = cached && cached.imagensHash === imagensHash;
+
+        if (textUnchanged && imagesUnchanged && cached.vetorTexto && cached.vetoresImagens && cached.vetoresImagens.length > 0) {
+            vetor = cached.vetorTexto;
+            vectorImages = cached.vetoresImagens;
+        } else {
+            cacheAlterado = true;
+            console.log(`⚡ [SISTEMA] Atualizando embeddings do imóvel ${idOriginal}...`);
+
+            // Lazy load do extrator de texto
+            if (!extractor) {
+                console.log("📥 [SISTEMA] Acordando IA Semântica (modelo paraphrase-multilingual)...");
+                extractor = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2');
+            }
+
+            // Vetoriza Texto
+            if (textUnchanged && cached && cached.vetorTexto) {
+                vetor = cached.vetorTexto;
+            } else {
+                const output = await extractor(textoParaVetor, { pooling: 'mean', normalize: true });
+                vetor = Array.from(output.data) as number[];
+            }
+
+            // Vetoriza Imagens
+            if (imagesUnchanged && cached && cached.vetoresImagens && cached.vetoresImagens.length > 0) {
+                vectorImages = cached.vetoresImagens;
+            } else {
+                if (todasFotos.length > 0) {
+                    if (!clipModel) {
+                        console.log("📥 [SISTEMA] Acordando IA Visual (modelo clip-vit-large-patch14)...");
+                        clipModel = await CLIPModel.from_pretrained('Xenova/clip-vit-large-patch14');
+                        clipProcessor = await AutoProcessor.from_pretrained('Xenova/clip-vit-large-patch14');
+                        clipTokenizer = await AutoTokenizer.from_pretrained('Xenova/clip-vit-large-patch14');
+                    }
+                    for (const url of todasFotos) {
+                        try {
+                            const vecImg = await extrairVetorImagem(url);
+                            vectorImages.push(vecImg);
+                        } catch (err) {
+                            console.warn(`⚠️ Não foi possível carregar a imagem ${url} do imóvel ${idLimpo}:`, err);
+                        }
+                    }
+                }
+            }
+
+            // Atualiza cache
+            cache[idOriginal] = {
+                vetorTexto: vetor,
+                vetoresImagens: vectorImages,
+                textoParaVetor,
+                imagensHash
+            };
+        }
 
         vetorDeImoveis.push({
-            id: imovel.id ? imovel.id.replace(/\D/g, '') : "",
+            id: idOriginal,
+            tipo_transacao: imovel.tipo_transacao,
             titulo: imovel.titulo,
             tipo_imovel: imovel.tipo_imovel,
             bairro: imovel.bairro,
             preco: imovel.preco,
             quartos: imovel.quartos,
             imagem_url: imovel.imagem_url,
+            fotos_adicionais: imovel.fotos_adicionais || "",
             endereco: imovel.endereco,
             numero: imovel.numero,
             complemento: imovel.complemento,
             cidade: imovel.cidade,
             empreendimento: imovel.empreendimento,
             descricao: imovel.descricao,
-
             vetorTexto: vetor,
-            vetorImagem: vectorImage
+            vetoresImagens: vectorImages
         });
+    }
+
+    if (cacheAlterado) {
+        try {
+            fs.writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2), 'utf-8');
+            console.log("💾 [SISTEMA] Cache de vetores atualizado e salvo em disco com sucesso!");
+        } catch (e) {
+            console.warn("⚠️ Não foi possível gravar o arquivo de cache de vetores:", e);
+        }
     }
     console.log(`✅ [SISTEMA] Banco Vetorial pronto! ${vetorDeImoveis.length} imóveis na memória RAM.`);
 
@@ -179,9 +258,22 @@ export const searchPropertiesTool = tool(
         try {
             await sincronizarVetores();
             if (codigo) {
-                const exato = vetorDeImoveis.find(i => i.id === codigo.replace(/\D/g, ''));
-                if (exato) {
-                    return JSON.stringify([{ ListingID: exato.id, Title: exato.titulo, PropertyType: exato.tipo_imovel, Bairro: exato.bairro, Valor: exato.preco, Quartos: exato.quartos }]);
+                const codigoLimpo = codigo.replace(/\D/g, '');
+                const encontrados = vetorDeImoveis.filter(i => {
+                    const idOriginal = i.id.toLowerCase();
+                    const paramLower = codigo.toLowerCase();
+                    return idOriginal === paramLower || idOriginal.replace(/\D/g, '') === codigoLimpo;
+                });
+                if (encontrados.length > 0) {
+                    return JSON.stringify(encontrados.map(exato => ({
+                        ListingID: exato.id,
+                        Title: exato.titulo,
+                        PropertyType: exato.tipo_imovel,
+                        Bairro: exato.bairro,
+                        Valor: exato.preco,
+                        Transacao: exato.tipo_transacao === 'For Rent' ? 'Locação' : 'Venda',
+                        Quartos: exato.quartos
+                    })));
                 }
                 return "Nenhum imóvel encontrado com esse código.";
             }
@@ -190,12 +282,24 @@ export const searchPropertiesTool = tool(
 
             if (foto_url) {
                 console.log("🎨 Rodando comparação foto a foto...");
+                if (!clipModel) {
+                    console.log("📥 [SISTEMA] Acordando IA Visual (modelo clip-vit-large-patch14)...");
+                    clipModel = await CLIPModel.from_pretrained('Xenova/clip-vit-large-patch14');
+                    clipProcessor = await AutoProcessor.from_pretrained('Xenova/clip-vit-large-patch14');
+                    clipTokenizer = await AutoTokenizer.from_pretrained('Xenova/clip-vit-large-patch14');
+                }
                 const vetorCliente = await extrairVetorImagem(foto_url);
                 imoveisComScore = vetorDeImoveis
-                    .filter(imovel => imovel.vetorImagem && imovel.vetorImagem.length > 0)
+                    .filter(imovel => imovel.vetoresImagens && imovel.vetoresImagens.length > 0)
                     .map(imovel => {
-                        const score = calcularSimilaridade(vetorCliente, imovel.vetorImagem);
-                        return { ...imovel, score };
+                        let maxScore = 0;
+                        for (const vetorImovel of imovel.vetoresImagens) {
+                            const score = calcularSimilaridade(vetorCliente, vetorImovel);
+                            if (score > maxScore) {
+                                maxScore = score;
+                            }
+                        }
+                        return { ...imovel, score: maxScore };
                     });
                 limiarAplicado = 0.60; // 📌 Limiar de corte para fotos (exige 60% de semelhança visual)
             } else if (pedido_livre) {
@@ -206,10 +310,12 @@ export const searchPropertiesTool = tool(
                 // Normalizações e extração de palavras-chave da busca
                 const queryNorm = normalizarTexto(pedido_livre);
                 const queryWords = queryNorm.split(/\s+/).filter(w => w.length > 1 && !STOP_WORDS.has(w));
-                
+
                 const queryIsApartment = queryNorm.includes("apartamento") || queryNorm.includes("apto");
                 const queryIsHouse = queryNorm.includes("casa");
                 const queryIsTerrain = queryNorm.includes("terreno");
+                const queryIsRent = queryNorm.includes("alug") || queryNorm.includes("locac") || queryNorm.includes("alugar") || queryNorm.includes("locar");
+                const queryIsSale = queryNorm.includes("compr") || queryNorm.includes("vend") || queryNorm.includes("comprar") || queryNorm.includes("venda") || queryNorm.includes("adquirir");
 
                 imoveisComScore = vetorDeImoveis.map(imovel => {
                     const semanticScore = calcularSimilaridade(vetorPedido, imovel.vetorTexto);
@@ -243,7 +349,7 @@ export const searchPropertiesTool = tool(
                     // 2. Restrição Rígida de Categoria (Evita misturar Terrenos com Apartamentos!)
                     const propertyTypeNorm = normalizarTexto(imovel.tipo_imovel || "");
                     let typeMultiplier = 1.0;
-                    
+
                     if (queryIsApartment && !propertyTypeNorm.includes("apartment")) {
                         typeMultiplier = 0.1; // penaliza pesadamente se o cliente quer apartamento e o imóvel não é um
                     }
@@ -253,8 +359,15 @@ export const searchPropertiesTool = tool(
                     if (queryIsTerrain && !propertyTypeNorm.includes("land") && !propertyTypeNorm.includes("terreno")) {
                         typeMultiplier = 0.1; // penaliza pesadamente se o cliente quer terreno e o imóvel não é um
                     }
+                    let transactionMultiplier = 1.0;
+                    if (queryIsRent && imovel.tipo_transacao !== "For Rent") {
+                        transactionMultiplier = 0.1;
+                    }
+                    if (queryIsSale && imovel.tipo_transacao !== "For Sale") {
+                        transactionMultiplier = 0.1;
+                    }
 
-                    const finalScore = (semanticScore + keywordBoost) * typeMultiplier;
+                    const finalScore = (semanticScore + keywordBoost) * typeMultiplier * transactionMultiplier;
                     return { ...imovel, score: finalScore };
                 });
 
@@ -284,6 +397,7 @@ export const searchPropertiesTool = tool(
             const top3 = imoveisFiltrados.slice(0, 3).map(i => ({
                 ListingID: i.id,
                 Title: i.titulo,
+                Transacao: i.tipo_transacao === 'For Rent' ? 'Locação' : 'Venda',
                 Bairro: i.bairro,
                 Valor: i.preco,
                 LinkFoto: i.imagem_url,

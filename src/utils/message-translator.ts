@@ -21,7 +21,6 @@ export class MessageTranslator {
             formData.append('prompt', dicionario);
             formData.append('file', blob, 'audio.ogg');
             formData.append('model', 'whisper-large-v3-turbo');
-            formData.append('prompt', 'Júlio Casas Imobiliária, Sorocaba, Votorantim, Campolim, Mangal, Trujillo, Éden, Wanel Ville');
 
             const aiResponse = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
                 method: 'POST',
