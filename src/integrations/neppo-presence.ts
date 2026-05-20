@@ -46,14 +46,18 @@ class NeppoPresence {
             logger.info('✅ Agente Fantasma está ONLINE no painel Neppo!');
             this.heartbeatInterval = setInterval(async () => {
                 try {
-                    if (this.page) {
+                    if (this.page && !this.page.isClosed()) {
                         await this.page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
                         logger.info('💓 Heartbeat: Agente Fantasma ainda online');
 
                     }
                 } catch (err) {
                     logger.error({ err }, '❌ Heartbeat falhou, reiniciando Fantasma...');
-                    await this.restart();
+                    try {
+                        await this.restart();
+                    } catch (erroCritico) {
+                        logger.error({ err }, '💀 Falha fatal ao reiniciar o Fantasma. O sistema principal continuará rodando.');
+                    }
                 }
             }, 25 * 60 * 1000);
 

@@ -99,7 +99,16 @@ export class NeppoWsClient {
         // 2. Escuta as mensagens de chat!
         const messagesQueue = `/user/exchange/amq.direct/chat.message/resource/${this.botResource}`;
         this.stompClient.subscribe(messagesQueue, async (frame) => {
-            const payload = JSON.parse(frame.body);
+            let payload;
+            try {
+                payload = JSON.parse(frame.body);
+            } catch (err) {
+                console.warn(`⚠️ WebSocket recebeu uma mensagem fora do padrão (não é JSON). Conteúdo: ${frame.body}`);
+                if (frame.body.includes('#FORCE_DISCONNECT')) {
+                    console.error("🔴 A Neppo enviou um comando de desconexão forçada!");
+                }
+                return;
+            }
 
             if (payload.sendBy === 'user' && payload.originUser === 'WHATSAPP') {
                 const clientText = await translator.translate(payload);
