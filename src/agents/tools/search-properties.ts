@@ -25,16 +25,16 @@ function callWorker(payload: object): Promise<string> {
                 return;
             }
 
-            if (
-                !workerAnswer.data ||
-                workerAnswer.data.items?.length === 0 ||
-                workerAnswer.data.length === 0
-            ) {
+            const data = workerAnswer.data;
+            const isEmptyArray = Array.isArray(data) && data.length === 0;
+            const isEmptyLegacyResult = !Array.isArray(data) && !data?.matchType && data?.items?.length === 0;
+
+            if (!data || isEmptyArray || isEmptyLegacyResult) {
                 resolve("Nenhum imóvel compatível encontrado no catálogo.");
                 return;
             }
 
-            resolve(JSON.stringify(workerAnswer.data));
+            resolve(JSON.stringify(data));
         };
 
         const onError = (erro: Error) => {
@@ -77,7 +77,7 @@ export const searchPropertiesTool = tool(
            return callWorker(payload);
     }, {
     name: "buscar_imoveis",
-    description: "Busca na base oficial da imobiliária. Use APENAS quando tiver Tipo e Bairro, ou o Código.",
+    description: "Busca na base oficial da imobiliária. Use com foto_url quando o cliente enviar imagem/print; use codigo para código; use pedido_livre quando tiver tipo e região/endereço.",
     schema: searchSchema,
 }
 )

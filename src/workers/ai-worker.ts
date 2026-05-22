@@ -110,6 +110,312 @@ function extrairEquivalentesNumericos(texto: string): string {
     return equivalentes.join(" ");
 }
 
+type TransactionSignal = "For Rent" | "For Sale";
+type PropertyIntent =
+    | "commercial_house"
+    | "house"
+    | "apartment"
+    | "land"
+    | "warehouse"
+    | "office"
+    | "commercial";
+
+interface SearchSignals {
+    normalized: string;
+    codigo?: string;
+    transacao?: TransactionSignal;
+    tipo?: PropertyIntent;
+    cidade?: string;
+    addressTokens: string[];
+    valores: number[];
+    areas: number[];
+    hasPortalText: boolean;
+}
+
+const CITY_HINTS = [
+    "aracoiaba da serra",
+    "salto de pirapora",
+    "vargem grande paulista",
+    "sao roque",
+    "votorantim",
+    "sorocaba",
+    "mairinque",
+    "ipero",
+    "itu",
+];
+
+const ADDRESS_TOKEN_STOP_WORDS = new Set([
+    ...STOP_WORDS,
+    "avenida",
+    "av",
+    "rua",
+    "rodovia",
+    "estrada",
+    "alameda",
+    "travessa",
+    "doutor",
+    "doutora",
+    "dr",
+    "dra",
+    "professor",
+    "professora",
+    "r",
+    "rs",
+    "valor",
+    "preco",
+]);
+
+function parseNumeroBR(valor: string): number | null {
+    let limpo = valor.replace(/\s+/g, "").replace(/[^\d,.]/g, "");
+    if (!limpo) return null;
+
+    if (limpo.includes(",") && limpo.includes(".")) {
+        limpo = limpo.replace(/\./g, "").replace(",", ".");
+    } else if (limpo.includes(",")) {
+        limpo = limpo.replace(",", ".");
+    } else if (limpo.includes(".")) {
+        const partes = limpo.split(".");
+        const ultimo = partes[partes.length - 1];
+        if (partes.length > 1 && ultimo.length === 3) {
+            limpo = partes.join("");
+        }
+    }
+
+    const numero = Number(limpo);
+    return Number.isFinite(numero) ? numero : null;
+}
+
+function uniqueNumbers(valores: number[]) {
+    return [...new Set(valores.map((v) => Math.round(v * 100) / 100))];
+}
+
+function extrairValoresMonetarios(texto: string) {
+    const valores = [...texto.matchAll(/(?:r\s*\$|rs)\s*([0-9][0-9.\s]*(?:,\d{1,2})?)/gi)]
+        .map((match) => parseNumeroBR(match[1]))
+        .filter((valor): valor is number => valor !== null && valor >= 500);
+    return uniqueNumbers(valores);
+}
+
+function extrairAreas(texto: string) {
+    const matches = texto.matchAll(/(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:m\s*(?:2|\u00b2)|metros?\s+quadrados?)/gi);
+    const areas = [...matches]
+        .map((match) => parseNumeroBR(match[1]))
+        .filter((valor): valor is number => valor !== null && valor >= 10 && valor <= 100000);
+    return uniqueNumbers(areas);
+}
+
+function extrairTransacao(normalized: string): TransactionSignal | undefined {
+    if (/\b(?:para\s+)?alugar\b|\baluguel\b|\blocacao\b|\blocar\b/.test(normalized)) return "For Rent";
+    if (/\b(?:a\s+)?venda\b|\bcomprar\b|\bcompra\b/.test(normalized)) return "For Sale";
+    return undefined;
+}
+
+function extrairTipoIntencao(normalized: string): PropertyIntent | undefined {
+    if (/\bcasa\s+comercial\b|\bcomercial\s+casa\b/.test(normalized)) return "commercial_house";
+    if (/\bgalpao\b|\bbarracao\b|\bindustrial\b/.test(normalized)) return "warehouse";
+    if (/\bapartamento\b|\bapto\b|\bflat\b|\bkitnet\b|\bstudio\b/.test(normalized)) return "apartment";
+    if (/\bterreno\b|\blote\b/.test(normalized)) return "land";
+    if (/\bcasa\b|\bsobrado\b|\bresidencia\b/.test(normalized)) return "house";
+    if (/\bsala\b|\blaje\b|\bconjunto\b|\bescritorio\b|\boffice\b/.test(normalized)) return "office";
+    if (/\bcomercial\b|\bloja\b|\bsalao\b|\bbusiness\b/.test(normalized)) return "commercial";
+    return undefined;
+}
+
+function extrairCidade(normalized: string) {
+    return CITY_HINTS.find((cidade) => normalized.includes(cidade));
+}
+
+function extrairTokensEndereco(normalized: string) {
+    const match = normalized.match(
+        /\b(?:avenida|av|rua|r|rodovia|estrada|alameda|travessa)\s+([a-z0-9\s]{3,90}?)(?=\s+(?:r\s*\d|rs\s*\d|valor|preco|por|alugar|venda|comprar|em\s+(?:sorocaba|votorantim|ipero|itu|mairinque|aracoiaba|salto)|\d+\s*m)|$)/
+    );
+    const trecho = match?.[1] || "";
+    return trecho
+        .split(/\s+/)
+        .filter((token) => token.length > 2 && !ADDRESS_TOKEN_STOP_WORDS.has(token))
+        .slice(0, 8);
+}
+
+function extrairSinaisBusca(texto: string): SearchSignals {
+    const normalized = normalizarTexto(texto);
+    return {
+        normalized,
+        codigo: normalizarCodigo(texto),
+        transacao: extrairTransacao(normalized),
+        tipo: extrairTipoIntencao(normalized),
+        cidade: extrairCidade(normalized),
+        addressTokens: extrairTokensEndereco(normalized),
+        valores: extrairValoresMonetarios(texto),
+        areas: extrairAreas(texto),
+        hasPortalText: /portal|juliocasas|zap|vivareal|olx|imovelweb|chavesnamao|imoveis|imovel/.test(normalized),
+    };
+}
+
+function temSinaisObjetivos(sinais: SearchSignals) {
+    return Boolean(
+        sinais.codigo ||
+        sinais.transacao ||
+        sinais.tipo ||
+        sinais.cidade ||
+        sinais.addressTokens.length > 0 ||
+        sinais.valores.length > 0 ||
+        sinais.areas.length > 0
+    );
+}
+
+function temSinaisFortes(sinais: SearchSignals) {
+    return Boolean(
+        sinais.codigo ||
+        sinais.addressTokens.length >= 2 ||
+        (sinais.transacao && sinais.tipo && (sinais.valores.length > 0 || sinais.areas.length > 0)) ||
+        (sinais.tipo && sinais.valores.length > 0 && sinais.areas.length > 0)
+    );
+}
+
+function textoComparavelImovel(imovel: any) {
+    return normalizarTexto(
+        `${imovel.id} ${imovel.titulo} ${imovel.tipo_imovel} ${imovel.cidade} ${imovel.bairro} ${imovel.endereco} ${imovel.empreendimento} ${imovel.preco} ${imovel.descricao}`
+    ) + " " + extrairEquivalentesNumericos(imovel.endereco || "");
+}
+
+function distanciaLevenshtein(a: string, b: string) {
+    const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+    for (let i = 0; i <= a.length; i++) dp[i][0] = i;
+    for (let j = 0; j <= b.length; j++) dp[0][j] = j;
+
+    for (let i = 1; i <= a.length; i++) {
+        for (let j = 1; j <= b.length; j++) {
+            const custo = a[i - 1] === b[j - 1] ? 0 : 1;
+            dp[i][j] = Math.min(
+                dp[i - 1][j] + 1,
+                dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + custo
+            );
+        }
+    }
+
+    return dp[a.length][b.length];
+}
+
+function tokenExisteComTolerancia(tokensTexto: string[], tokenBusca: string) {
+    if (tokensTexto.includes(tokenBusca)) return true;
+    if (tokenBusca.length < 5) return false;
+    return tokensTexto.some((tokenTexto) =>
+        tokenTexto.length >= 5 &&
+        Math.abs(tokenTexto.length - tokenBusca.length) <= 1 &&
+        distanciaLevenshtein(tokenTexto, tokenBusca) <= 1
+    );
+}
+
+function tipoCompativel(imovel: any, tipo: PropertyIntent) {
+    const texto = normalizarTexto(`${imovel.tipo_imovel} ${imovel.titulo}`);
+    const isLand = /\bland\b|\bterreno\b|\blote\b/.test(texto);
+    const isApartment = /\bapartment\b|\bapartamento\b|\bapto\b|\bflat\b|\bkitnet\b|\bstudio\b/.test(texto);
+    const isHouse = /\bhouse\b|\bcasa\b|\bsobrado\b|\bresidencia\b/.test(texto);
+    const isCommercial = /\bcommercial\b|\bcomercial\b|\bbusiness\b|\bloja\b|\bsalao\b|\bedificio\b|\boffice\b|\bsala\b/.test(texto);
+    const isWarehouse = /\bindustrial\b|\bgalpao\b|\bbarracao\b|\bwarehouse\b/.test(texto);
+
+    if (tipo === "commercial_house") return isCommercial && isHouse && !isLand;
+    if (tipo === "house") return isHouse && !isApartment && !isLand;
+    if (tipo === "apartment") return isApartment;
+    if (tipo === "land") return isLand;
+    if (tipo === "warehouse") return isWarehouse;
+    if (tipo === "office") return (/\boffice\b|\bsala\b|\blaje\b|\bescritorio\b|\bconjunto\b|\bcommercial\b|\bcomercial\b/.test(texto)) && !isLand;
+    if (tipo === "commercial") return isCommercial && !isLand;
+    return true;
+}
+
+function diferencaRelativa(a: number, b: number) {
+    return Math.abs(a - b) / Math.max(a, b, 1);
+}
+
+function melhorDiferenca(alvo: number, candidatos: number[]) {
+    if (candidatos.length === 0) return null;
+    return Math.min(...candidatos.map((candidato) => diferencaRelativa(alvo, candidato)));
+}
+
+function avaliarCompatibilidadeObjetiva(imovel: any, sinais: SearchSignals) {
+    const texto = textoComparavelImovel(imovel);
+    const tokensImovel = texto.split(/\s+/).filter(Boolean);
+    const evidencias: string[] = [];
+    const bloqueios: string[] = [];
+    let objectiveScore = 0;
+
+    if (sinais.transacao) {
+        if (imovel.tipo_transacao !== sinais.transacao) {
+            bloqueios.push("transacao incompatível");
+        } else {
+            objectiveScore += 0.25;
+            evidencias.push("Transacao bate com o print");
+        }
+    }
+
+    if (sinais.tipo) {
+        if (!tipoCompativel(imovel, sinais.tipo)) {
+            bloqueios.push("tipo incompatível");
+        } else {
+            objectiveScore += 0.25;
+            evidencias.push("Tipo do imovel bate com o print");
+        }
+    }
+
+    if (sinais.cidade) {
+        const cidadeImovel = normalizarTexto(imovel.cidade || "");
+        if (cidadeImovel && cidadeImovel !== sinais.cidade) {
+            bloqueios.push("cidade incompatível");
+        } else if (cidadeImovel) {
+            objectiveScore += 0.12;
+            evidencias.push("Cidade bate com o print");
+        }
+    }
+
+    if (sinais.addressTokens.length > 0) {
+        const matches = sinais.addressTokens.filter((token) => tokenExisteComTolerancia(tokensImovel, token));
+        const required = sinais.addressTokens.length >= 2 ? Math.ceil(sinais.addressTokens.length * 0.6) : 1;
+        if (sinais.addressTokens.length >= 2 && matches.length < required) {
+            bloqueios.push("endereco incompatível");
+        } else if (matches.length > 0) {
+            objectiveScore += Math.min(matches.length * 0.18, 0.54);
+            evidencias.push(`${matches.length} termos do endereco bateram`);
+        }
+    }
+
+    if (sinais.valores.length > 0) {
+        const precoImovel = parseNumeroBR(String(imovel.preco || ""));
+        if (precoImovel) {
+            const diff = melhorDiferenca(precoImovel, sinais.valores);
+            if (diff !== null && diff <= 0.05) {
+                objectiveScore += 0.35;
+                evidencias.push("Preco bate com o print");
+            } else if (diff !== null && diff <= 0.20) {
+                objectiveScore += 0.20;
+                evidencias.push("Preco proximo ao print");
+            } else if (diff !== null && diff > 0.35 && temSinaisFortes(sinais)) {
+                bloqueios.push("preco incompatível");
+            }
+        }
+    }
+
+    if (sinais.areas.length > 0) {
+        const areasImovel = extrairAreas(`${imovel.titulo || ""} ${imovel.descricao || ""}`);
+        const diffs = sinais.areas.flatMap((areaPrint) =>
+            areasImovel.map((areaImovel) => diferencaRelativa(areaPrint, areaImovel))
+        );
+        const melhorDiff = diffs.length > 0 ? Math.min(...diffs) : null;
+        if (melhorDiff !== null && melhorDiff <= 0.08) {
+            objectiveScore += 0.25;
+            evidencias.push("Area bate com o print");
+        } else if (melhorDiff !== null && melhorDiff <= 0.25) {
+            objectiveScore += 0.12;
+            evidencias.push("Area proxima ao print");
+        } else if (melhorDiff !== null && melhorDiff > 0.45 && sinais.addressTokens.length > 0) {
+            bloqueios.push("area incompatível");
+        }
+    }
+
+    return { objectiveScore, evidencias, bloqueios };
+}
+
 async function extrairVetorImagem(imageUrl: string): Promise<number[]> {
     const { RawImage } = await getTransformers();
     const buffer = await baixarImagemBuffer(imageUrl);
@@ -198,7 +504,7 @@ async function sincronizarVetores() {
         // Respiro do Event Loop a cada 20 imóveis
         if (contadorDeRespiro % 20 === 0) {
             console.log(`--- 🧹 [WORKER] Respiro: ${contadorDeRespiro}/${imoveisFiltrados.length} ---`);
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            //await new Promise(resolve => setTimeout(resolve, 2000));
         }
     }
     if (cacheAlterado) {
@@ -225,16 +531,22 @@ function formatarImovel(i:any, score?:number, evidencias:string[] = []) {
     ListingID: i.id,
     Title: i.titulo,
     Transacao: i.tipo_transacao === "For Rent" ? "Locação" : "Venda",
+    PropertyType: i.tipo_imovel,
+    Cidade: i.cidade,
     Bairro: i.bairro,
     Valor: i.preco,
     LinkFoto: i.imagem_url,
-    Score: score ? `${(score * 100).toFixed(1)}%` : undefined,
+    Score: score !== undefined ? score.toFixed(3) : undefined,
     Evidencias: evidencias,
   };
 }
 
 function normalizarCodigo(texto: string) {
   return texto.match(/\b[LV]\s?\d{3,6}\b/i)?.[0]?.replace(/\s/g, "").toUpperCase();
+}
+
+function extrairNumerosCodigo(texto:string) {
+  return texto?.replace(/\D/g, "") || "";
 }
 
 function parecePrint(textoOuUrl: string) {
@@ -245,6 +557,16 @@ async function baixarImagemBuffer(url: string) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Falha ao baixar imagem: ${response.status}`);
   return Buffer.from(await response.arrayBuffer());
+}
+
+async function imagemProvavelmentePrint(imageUrl: string) {
+  try {
+    const metadata = await sharp(await baixarImagemBuffer(imageUrl)).metadata();
+    if (!metadata.width || !metadata.height) return false;
+    return metadata.height > metadata.width && metadata.height / metadata.width >= 1.35;
+  } catch {
+    return false;
+  }
 }
 
 async function extrairTextoOCR(imageUrl: string) {
@@ -272,33 +594,41 @@ function buscarPorCodigoLocal(codigo: string) {
   );
 }
 
-async function buscarPorTextoInterno(texto: string) {
+async function buscarPorTextoInterno(texto: string, sinais = extrairSinaisBusca(texto)) {
   if (!extractor) {
     await carregarModeloTexto();
   }
 
   const outputTexto = await extractor(texto, { pooling: "mean", normalize: true });
   const vetorPedido = Array.from(outputTexto.data) as number[];
-  const queryNorm = normalizarTexto(texto);
+  const queryNorm = sinais.normalized;
   const queryWords = queryNorm.split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
   return vetorDeImoveis
     .map((imovel) => {
       const semanticScore = calcularSimilaridade(vetorPedido, imovel.vetorTexto);
-      const textoComparar = normalizarTexto(
-        `${imovel.id} ${imovel.titulo} ${imovel.tipo_imovel} ${imovel.cidade} ${imovel.bairro} ${imovel.endereco} ${imovel.empreendimento} ${imovel.preco} ${imovel.descricao}`
-      );
+      const textoComparar = textoComparavelImovel(imovel);
+      const objetivo = avaliarCompatibilidadeObjetiva(imovel, sinais);
+
+      if (objetivo.bloqueios.length > 0) {
+        return { ...imovel, score: -Infinity, objectiveScore: 0, evidencias: objetivo.evidencias };
+      }
 
       const matchCount = queryWords.filter((w) => textoComparar.includes(w)).length;
       const keywordBoost = Math.min(matchCount * 0.08, 0.40);
 
       return {
         ...imovel,
-        score: semanticScore + keywordBoost,
-        evidencias: matchCount > 0 ? [`${matchCount} termos do print bateram com a base`] : [],
+        score: semanticScore + keywordBoost + objetivo.objectiveScore,
+        objectiveScore: objetivo.objectiveScore,
+        evidencias: [
+          ...objetivo.evidencias,
+          ...(matchCount > 0 ? [`${matchCount} termos do print bateram com a base`] : []),
+        ],
       };
     })
+    .filter((imovel) => Number.isFinite(imovel.score))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 5);
+    .slice(0, 8);
 }
 
 async function buscarVisualComConfianca(fotoUrl: string) {
@@ -368,17 +698,21 @@ parentPort?.on('message', async (message) => {
     if (message.command === "BUSCAR_FOTO") {
   try {
     let ocrText = "";
-    let tentouOCR = false;
     const visualResult = await buscarVisualComConfianca(message.foto_url);
+    const deveTentarOCR =
+      visualResult.confidence !== "high" ||
+      parecePrint(message.foto_url) ||
+      await imagemProvavelmentePrint(message.foto_url);
+    let sinaisOCR: SearchSignals | null = null;
 
-    if (visualResult.confidence !== "high" && !tentouOCR) {
-      tentouOCR = true;
+    if (deveTentarOCR) {
       try {
         ocrText = await extrairTextoOCR(message.foto_url);
+        sinaisOCR = extrairSinaisBusca(ocrText);
       } catch (ocrError) {
         console.warn("⚠️ [WORKER] OCR falhou, mantendo resultado visual:", ocrError);
       }
-      const codigoOCR = normalizarCodigo(ocrText);
+      const codigoOCR = sinaisOCR?.codigo || normalizarCodigo(ocrText);
 
       if (codigoOCR) {
         const imovel = buscarPorCodigoLocal(codigoOCR);
@@ -390,31 +724,44 @@ parentPort?.on('message', async (message) => {
               matchType: "exact",
               confidence: "high",
               source: "ocr_code",
-              items: [formatarImovel(imovel, 1, [`Código encontrado no print: ${codigoOCR}`])],
+              items: [formatarImovel(imovel, 1, [`Código encontrado no print: ${extrairNumerosCodigo(codigoOCR)}`])],
             },
           });
           return;
         }
       }
     }
-    if (ocrText && visualResult.confidence !== "high") {
-      const textCandidates = await buscarPorTextoInterno(ocrText);
-      const candidatosRelevantes = textCandidates.filter((i) => i.score >= OCR_TEXT_CANDIDATE_THRESHOLD);
+
+    if (ocrText && sinaisOCR && temSinaisObjetivos(sinaisOCR)) {
+      const textCandidates = await buscarPorTextoInterno(ocrText, sinaisOCR);
+      const candidatosRelevantes = textCandidates.filter(
+        (i) => i.score >= OCR_TEXT_CANDIDATE_THRESHOLD || i.objectiveScore >= 0.45
+      );
       const melhores = candidatosRelevantes.slice(0, 3).map((i) =>
         formatarImovel(i, i.score, i.evidencias || ["Texto do print parecido com a base"])
       );
+      const top = candidatosRelevantes[0];
+      const second = candidatosRelevantes[1];
+      const margin = top && second ? top.score - second.score : 1;
+      const exactByOcr =
+        Boolean(top) &&
+        temSinaisFortes(sinaisOCR) &&
+        top.objectiveScore >= 0.62 &&
+        (margin >= 0.18 || top.objectiveScore >= 0.90);
 
-      parentPort?.postMessage({
-        requestId: message.requestId,
-        status: "CONCLUIDO",
-        data: {
-          matchType: melhores.length > 0 ? "candidates" : "none",
-          confidence: melhores.length > 0 ? "medium" : "low",
-          source: "ocr_semantic",
-          items: melhores,
-        },
-      });
-      return;
+      if (melhores.length > 0 || temSinaisFortes(sinaisOCR)) {
+        parentPort?.postMessage({
+          requestId: message.requestId,
+          status: "CONCLUIDO",
+          data: {
+            matchType: melhores.length > 0 ? (exactByOcr ? "exact" : "candidates") : "none",
+            confidence: melhores.length > 0 ? (exactByOcr ? "high" : "medium") : "low",
+            source: "ocr_objective",
+            items: exactByOcr ? melhores.slice(0, 1) : melhores,
+          },
+        });
+        return;
+      }
     }
 
     parentPort?.postMessage({

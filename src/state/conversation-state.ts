@@ -26,7 +26,7 @@ export const AgentState = Annotation.Root({
         default: () => 'TRIAGEM',
     }),
     leadInfo: Annotation<LeadInfo>({
-        reducer: (atual, novo) => ({ ...atual, ...novo }),
+        reducer: (atual, novo) => ({ ...atual, ...novo }),  
         default: () => ({ interest: null }),
     }),
     leadCreated: Annotation<boolean>({

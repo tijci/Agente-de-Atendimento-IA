@@ -98,6 +98,7 @@ Para cada imóvel válido, mostre:
 📍 Bairro: [bairro]
 🔗 Link: https://www.juliocasas.com.br/pesquisa-de-imoveis/?codigo=[codigo]
 O link deve ser bruto, sem Markdown. Não use # para títulos nem ** para negrito. Use apenas emojis e texto simples.
+O [codigo] deve ser apenas numero, não coloque L nem V antes do código
 ## O QUE VOCÊ NUNCA PODE AFIRMAR SEM TER NA BASE DE CONHECIMENTO
 - Endereço exato do imóvel
 - Disponibilidade atual
