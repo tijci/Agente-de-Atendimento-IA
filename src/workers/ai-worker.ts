@@ -1,5 +1,6 @@
+import sharp from "sharp";
+import { createWorker } from "tesseract.js";
 import { parentPort } from "worker_threads";
-import { pipeline, RawImage, CLIPModel, AutoProcessor, AutoTokenizer } from '@xenova/transformers';
 import Papa from 'papaparse';
 import fs from 'fs';
 import path from 'path';
@@ -11,6 +12,7 @@ let clipProcessor: any = null;
 let clipTokenizer: any = null;
 let vetorDeImoveis: any[] = [];
 let isCarregando = false;
+let transformers: any = null;
 
 const CACHE_PATH = path.join(process.cwd(), 'data', 'vetores-cache.json');
 
@@ -19,6 +21,37 @@ const STOP_WORDS = new Set([
     "o", "a", "em", "com", "que", "uma", "uns", "do", "dos", "das", "sobre", "como", "mais", "tem",
     "gostaria", "ver", "casa", "apartamento", "terreno", "apto", "lote", "chacara", "sitio", "sobrado"
 ]);
+
+
+const EXACT_THRESHOLD = Number(process.env.IMAGE_EXACT_THRESHOLD || "0.70");
+const CANDIDATE_THRESHOLD = Number(process.env.IMAGE_CANDIDATE_THRESHOLD || "0.58");
+const EXACT_MARGIN = Number(process.env.IMAGE_EXACT_MARGIN || "0.04");
+const OCR_TEXT_CANDIDATE_THRESHOLD = Number(process.env.OCR_TEXT_CANDIDATE_THRESHOLD || "0.35");
+
+
+async function getTransformers() {
+    if (!transformers) {
+        transformers = await import('@xenova/transformers');
+    }
+    return transformers;
+}
+
+async function carregarModeloTexto() {
+    if (!extractor) {
+        const { pipeline } = await getTransformers();
+        extractor = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2');
+    }
+    return extractor;
+}
+
+async function carregarModeloVisual() {
+    if (!clipModel) {
+        const { CLIPModel, AutoProcessor, AutoTokenizer } = await getTransformers();
+        clipModel = await CLIPModel.from_pretrained('Xenova/clip-vit-large-patch14');
+        clipProcessor = await AutoProcessor.from_pretrained('Xenova/clip-vit-large-patch14');
+        clipTokenizer = await AutoTokenizer.from_pretrained('Xenova/clip-vit-large-patch14');
+    }
+}
 
 function calcularSimilaridade(vecA: number[], vecB: number[]) {
     // Calcula o Cosseno de Similaridade: mede o ângulo entre dois vetores (0 = nada similar, 1 = idêntico)
@@ -78,6 +111,7 @@ function extrairEquivalentesNumericos(texto: string): string {
 }
 
 async function extrairVetorImagem(imageUrl: string): Promise<number[]> {
+    const { RawImage } = await getTransformers();
     const img = await RawImage.read(imageUrl);
     const imageInputs = await clipProcessor(img);
     const textInputs = await clipTokenizer([""]);
@@ -127,7 +161,7 @@ async function sincronizarVetores() {
             console.log(`⚡ [WORKER] [${contadorDeRespiro}/${imoveisFiltrados.length} - ${pct}%] Atualizando ${idOriginal}...`);
             if (!extractor) {
                 console.log("📥 [WORKER] Carregando modelo de texto...");
-                extractor = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2');
+                await carregarModeloTexto();
             }
             vetor = textUnchanged && cached?.vetorTexto
                 ? cached.vetorTexto
@@ -135,9 +169,7 @@ async function sincronizarVetores() {
             if (!imagesUnchanged && todasFotos.length > 0) {
                 if (!clipModel) {
                     console.log("📥 [WORKER] Carregando modelo visual...");
-                    clipModel = await CLIPModel.from_pretrained('Xenova/clip-vit-large-patch14');
-                    clipProcessor = await AutoProcessor.from_pretrained('Xenova/clip-vit-large-patch14');
-                    clipTokenizer = await AutoTokenizer.from_pretrained('Xenova/clip-vit-large-patch14');
+                    await carregarModeloVisual();
                 }
                 for (const url of todasFotos) {
                     try { vectorImages.push(await extrairVetorImagem(url)); }
@@ -174,37 +206,235 @@ async function sincronizarVetores() {
 
 
 console.log("👷‍♂️ [WORKER] IA iniciada! Carregando modelos vetoriais em Thread separada...");
-sincronizarVetores().catch(err => console.error("❌ [WORKER] Erro fatal na sincronização:", err));
+const readyPromise = sincronizarVetores().catch(err => {
+    console.error("❌ [WORKER] Erro fatal na sincronização:", err);
+    throw err;
+});
 
+let ocrWorker: any = null;
 
+function formatarImovel(i:any, score?:number, evidencias:string[] = []) {
+    return {
+    ListingID: i.id,
+    Title: i.titulo,
+    Transacao: i.tipo_transacao === "For Rent" ? "Locação" : "Venda",
+    Bairro: i.bairro,
+    Valor: i.preco,
+    LinkFoto: i.imagem_url,
+    Score: score ? `${(score * 100).toFixed(1)}%` : undefined,
+    Evidencias: evidencias,
+  };
+}
+
+function normalizarCodigo(texto: string) {
+  return texto.match(/\b[LV]\s?\d{3,6}\b/i)?.[0]?.replace(/\s/g, "").toUpperCase();
+}
+
+function parecePrint(textoOuUrl: string) {
+  return /print|screenshot|whatsapp|portal|imovel|juliocasas|zap|vivareal|olx|imovelweb|chavesnamao/i.test(textoOuUrl);
+}
+
+async function baixarImagemBuffer(url: string) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Falha ao baixar imagem: ${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function extrairTextoOCR(imageUrl: string) {
+  if (!ocrWorker) {
+    ocrWorker = await createWorker("por+eng");
+  }
+  const buffer = await baixarImagemBuffer(imageUrl);
+  const prepared = await sharp(buffer)
+    .resize({ width: 1400, withoutEnlargement: true })
+    .grayscale()
+    .normalize()
+    .png()
+    .toBuffer();
+
+  const result = await ocrWorker.recognize(prepared);
+  return result.data.text || "";
+}
+
+function buscarPorCodigoLocal(codigo: string) {
+  const codigoLimpo = codigo.replace(/\D/g, "");
+  return vetorDeImoveis.find(
+    (i) =>
+      i.id?.toLowerCase() === codigo.toLowerCase() ||
+      i.id?.replace(/\D/g, "") === codigoLimpo
+  );
+}
+
+async function buscarPorTextoInterno(texto: string) {
+  if (!extractor) {
+    await carregarModeloTexto();
+  }
+
+  const outputTexto = await extractor(texto, { pooling: "mean", normalize: true });
+  const vetorPedido = Array.from(outputTexto.data) as number[];
+  const queryNorm = normalizarTexto(texto);
+  const queryWords = queryNorm.split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+  return vetorDeImoveis
+    .map((imovel) => {
+      const semanticScore = calcularSimilaridade(vetorPedido, imovel.vetorTexto);
+      const textoComparar = normalizarTexto(
+        `${imovel.id} ${imovel.titulo} ${imovel.tipo_imovel} ${imovel.cidade} ${imovel.bairro} ${imovel.endereco} ${imovel.empreendimento} ${imovel.preco} ${imovel.descricao}`
+      );
+
+      const matchCount = queryWords.filter((w) => textoComparar.includes(w)).length;
+      const keywordBoost = Math.min(matchCount * 0.08, 0.40);
+
+      return {
+        ...imovel,
+        score: semanticScore + keywordBoost,
+        evidencias: matchCount > 0 ? [`${matchCount} termos do print bateram com a base`] : [],
+      };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+}
+
+async function buscarVisualComConfianca(fotoUrl: string) {
+  if (!clipModel) {
+    await carregarModeloVisual();
+  }
+
+  const vetorCliente = await extrairVetorImagem(fotoUrl);
+
+  const ranked = vetorDeImoveis
+    .filter((i) => i.vetoresImagens?.length > 0)
+    .map((i) => ({
+      ...i,
+      score: Math.max(...i.vetoresImagens.map((v: number[]) => calcularSimilaridade(vetorCliente, v))),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  const top = ranked[0];
+  const second = ranked[1];
+  const margin = top && second ? top.score - second.score : 1;
+
+  if (top && top.score >= EXACT_THRESHOLD && margin >= EXACT_MARGIN) {
+    return {
+      matchType: "exact",
+      confidence: "high",
+      source: "visual_clip",
+      items: [formatarImovel(top, top.score, ["Foto muito parecida com imagem do catálogo"])],
+    };
+  }
+
+  return {
+    matchType: "candidates",
+    confidence: top?.score >= CANDIDATE_THRESHOLD ? "medium" : "low",
+    source: "visual_clip",
+    items: ranked
+      .filter((i) => i.score >= CANDIDATE_THRESHOLD)
+      .slice(0, 3)
+      .map((i) => formatarImovel(i, i.score, ["Semelhança visual com o catálogo"])),
+  };
+}
+  
 parentPort?.on('message', async (message) => {
+    try {
+        await readyPromise;
+    } catch (error) {
+        parentPort?.postMessage({
+            requestId: message.requestId,
+            status: "CONCLUIDO",
+            data: {
+                matchType: "none",
+                confidence: "low",
+                source: "catalog_error",
+                items: [],
+            },
+        });
+        return;
+    }
 
     if (message.command === 'BUSCAR_CODIGO') {
         const codigoLimpo = message.codigo.replace(/\D/g, '');
         const encontrados = vetorDeImoveis.filter(i =>
             i.id.toLowerCase() === message.codigo.toLowerCase() || i.id.replace(/\D/g, '') === codigoLimpo
         ).map(i => ({ ListingID: i.id, Title: i.titulo, PropertyType: i.tipo_imovel, Bairro: i.bairro, Valor: i.preco, Transacao: i.tipo_transacao === 'For Rent' ? 'Locação' : 'Venda', Quartos: i.quartos }));
-        parentPort?.postMessage({ status: 'CONCLUIDO', data: encontrados.length > 0 ? encontrados : null });
+        parentPort?.postMessage({ requestId: message.requestId, status: 'CONCLUIDO', data: encontrados.length > 0 ? encontrados : null });
     }
 
-    if (message.command === 'BUSCAR_FOTO') {
-        if (!clipModel) {
-            clipModel = await CLIPModel.from_pretrained('Xenova/clip-vit-large-patch14');
-            clipProcessor = await AutoProcessor.from_pretrained('Xenova/clip-vit-large-patch14');
-            clipTokenizer = await AutoTokenizer.from_pretrained('Xenova/clip-vit-large-patch14');
+    if (message.command === "BUSCAR_FOTO") {
+  try {
+    let ocrText = "";
+    let tentouOCR = false;
+    const visualResult = await buscarVisualComConfianca(message.foto_url);
+
+    if (visualResult.confidence !== "high" && !tentouOCR) {
+      tentouOCR = true;
+      try {
+        ocrText = await extrairTextoOCR(message.foto_url);
+      } catch (ocrError) {
+        console.warn("⚠️ [WORKER] OCR falhou, mantendo resultado visual:", ocrError);
+      }
+      const codigoOCR = normalizarCodigo(ocrText);
+
+      if (codigoOCR) {
+        const imovel = buscarPorCodigoLocal(codigoOCR);
+        if (imovel) {
+          parentPort?.postMessage({
+            requestId: message.requestId,
+            status: "CONCLUIDO",
+            data: {
+              matchType: "exact",
+              confidence: "high",
+              source: "ocr_code",
+              items: [formatarImovel(imovel, 1, [`Código encontrado no print: ${codigoOCR}`])],
+            },
+          });
+          return;
         }
-        const vetorCliente = await extrairVetorImagem(message.foto_url);
-        const resultado = vetorDeImoveis
-            .filter(i => i.vetoresImagens?.length > 0)
-            .map(i => ({ ...i, score: Math.max(...i.vetoresImagens.map((v: number[]) => calcularSimilaridade(vetorCliente, v))) }))
-            .filter(i => i.score >= 0.60)
-            .sort((a, b) => b.score - a.score).slice(0, 3)
-            .map(i => ({ ListingID: i.id, Title: i.titulo, Transacao: i.tipo_transacao === 'For Rent' ? 'Locação' : 'Venda', Bairro: i.bairro, Valor: i.preco, LinkFoto: i.imagem_url, Semelhanca: `${(i.score * 100).toFixed(1)}%` }));
-        parentPort?.postMessage({ status: 'CONCLUIDO', data: resultado });
+      }
     }
+    if (ocrText && visualResult.confidence !== "high") {
+      const textCandidates = await buscarPorTextoInterno(ocrText);
+      const candidatosRelevantes = textCandidates.filter((i) => i.score >= OCR_TEXT_CANDIDATE_THRESHOLD);
+      const melhores = candidatosRelevantes.slice(0, 3).map((i) =>
+        formatarImovel(i, i.score, i.evidencias || ["Texto do print parecido com a base"])
+      );
+
+      parentPort?.postMessage({
+        requestId: message.requestId,
+        status: "CONCLUIDO",
+        data: {
+          matchType: melhores.length > 0 ? "candidates" : "none",
+          confidence: melhores.length > 0 ? "medium" : "low",
+          source: "ocr_semantic",
+          items: melhores,
+        },
+      });
+      return;
+    }
+
+    parentPort?.postMessage({
+      requestId: message.requestId,
+      status: "CONCLUIDO",
+      data: visualResult,
+    });
+  } catch (error) {
+    console.error("❌ Erro na busca por foto:", error);
+    parentPort?.postMessage({
+      requestId: message.requestId,
+      status: "CONCLUIDO",
+      data: {
+        matchType: "none",
+        confidence: "low",
+        source: "error",
+        items: [],
+      },
+    });
+  }
+}
 
     if (message.command === 'BUSCAR_SEMANTICA') {
         const pedido = message.text;
+        if (!extractor) {
+            await carregarModeloTexto();
+        }
         const outputTexto = await extractor(pedido, { pooling: 'mean', normalize: true });
         const vetorPedido = Array.from(outputTexto.data) as number[];
         const queryNorm = normalizarTexto(pedido);
@@ -230,6 +460,6 @@ parentPort?.on('message', async (message) => {
             return { ...imovel, score: (semanticScore + keywordBoost) * typeMultiplier * transMultiplier };
         }).filter(i => i.score >= 0.25).sort((a, b) => b.score - a.score).slice(0, 3)
             .map(i => ({ ListingID: i.id, Title: i.titulo, Transacao: i.tipo_transacao === 'For Rent' ? 'Locação' : 'Venda', Bairro: i.bairro, Valor: i.preco, LinkFoto: i.imagem_url, Semelhanca: `${(i.score * 100).toFixed(1)}%` }));
-        parentPort?.postMessage({ status: 'CONCLUIDO', data: resultado });
+        parentPort?.postMessage({ requestId: message.requestId, status: 'CONCLUIDO', data: resultado });
     }
 });

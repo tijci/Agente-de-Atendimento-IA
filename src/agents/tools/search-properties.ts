@@ -8,6 +8,48 @@ const aiWorker = new Worker(path.join(__dirname, '../../workers/ai-worker.ts'), 
 });
 aiWorker.on('error', (err) => console.error('❌ [WORKER] Erro inesperado na Thread da IA:', err));
 
+let requestSeq = 0;
+
+function callWorker(payload: object): Promise<string> {
+    const requestId = `req_${Date.now()}_${++requestSeq}`;
+
+    return new Promise((resolve, reject) => {
+        const onMessage = (workerAnswer: any) => {
+            if (workerAnswer.requestId !== requestId) return;
+
+            aiWorker.off("message", onMessage);
+            aiWorker.off("error", onError);
+
+            if (workerAnswer.status !== "CONCLUIDO") {
+                reject("Sistema de buscas temporariamente inoperante.");
+                return;
+            }
+
+            if (
+                !workerAnswer.data ||
+                workerAnswer.data.items?.length === 0 ||
+                workerAnswer.data.length === 0
+            ) {
+                resolve("Nenhum imóvel compatível encontrado no catálogo.");
+                return;
+            }
+
+            resolve(JSON.stringify(workerAnswer.data));
+        };
+
+        const onError = (erro: Error) => {
+            aiWorker.off("message", onMessage);
+            aiWorker.off("error", onError);
+            reject(erro);
+        };
+
+        aiWorker.on("message", onMessage);
+        aiWorker.on("error", onError);
+        aiWorker.postMessage({ ...payload, requestId });
+    });
+}
+
+
 const searchSchema = z.object({
     pedido_livre: z.string().optional().describe("A frase do cliente com o que ele deseja (opcional se passar foto)"),
     codigo: z.string().optional().describe("Código numérico (ListingID), APENAS se o cliente passar um"),
@@ -32,22 +74,7 @@ export const searchPropertiesTool = tool(
         } else {
             return "Por favor, envie uma foto ou diga o que está procurando.";
         }
-        return new Promise<string>((resolve, reject) => {
-            aiWorker.postMessage(payload);
-            aiWorker.once('message', (workerAnswer) => {
-                if (workerAnswer.status === 'CONCLUIDO') {
-                    if (!workerAnswer.data || workerAnswer.data.length === 0) {
-                        resolve("Nenhum imóvel compatível encontrado no catálogo.");
-                    } else {
-                        resolve(JSON.stringify(workerAnswer.data));
-                    }
-                }
-            });
-            aiWorker.once('error', (erro) => {
-                console.error("❌ Worker falhou ao processar pedido:", erro);
-                reject("Sistema de buscas temporariamente inoperante.");
-            });
-        });
+           return callWorker(payload);
     }, {
     name: "buscar_imoveis",
     description: "Busca na base oficial da imobiliária. Use APENAS quando tiver Tipo e Bairro, ou o Código.",
