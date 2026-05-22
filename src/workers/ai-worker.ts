@@ -112,7 +112,14 @@ function extrairEquivalentesNumericos(texto: string): string {
 
 async function extrairVetorImagem(imageUrl: string): Promise<number[]> {
     const { RawImage } = await getTransformers();
-    const img = await RawImage.read(imageUrl);
+    const buffer = await baixarImagemBuffer(imageUrl);
+    const { data, info } = await sharp(buffer)
+        .rotate()
+        .resize({ width: 1024, height: 1024, fit: "inside", withoutEnlargement: true })
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+    const img = new RawImage(new Uint8ClampedArray(data), info.width, info.height, info.channels);
     const imageInputs = await clipProcessor(img);
     const textInputs = await clipTokenizer([""]);
     const output = await clipModel({ ...textInputs, pixel_values: imageInputs.pixel_values });
