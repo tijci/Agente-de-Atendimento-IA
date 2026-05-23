@@ -1,23 +1,50 @@
-/* BLOCO: A CONEXÃO PURA COM O CRACHÁ (neppo-ws-client.ts) */
-
+/**
+ * Cliente WebSocket STOMP Neppo — canal principal de entrada/saída WhatsApp.
+ * @module integrations/neppo-ws-client
+ * @see docs/MODULES.md#srcintegrationsneppo-ws-clientts
+ */
 import { Client } from "@stomp/stompjs";
 import WebSocket from "ws";
 import { processAIMessage } from '../agents/graph';
 import { MessageDebouncer } from '../utils/message-debouncer';
 import { translator } from '../utils/message-translator';
+import { env } from '../config/env';
+import { parseMarkedResponse, prepareOutboundMessages } from '../utils/message-splitter';
+import { randomInterMessageDelayMs, sleep } from '../utils/humanize';
+import { logger } from '../utils/logger';
+import { sanitizeOutboundText } from '../utils/outbound-sanitize';
 
 export class NeppoWsClient {
     private cookieSession: string = '';
     private stompClient: Client | null = null;
     private botResource = Math.random().toString(36).substring(2, 10);
+    private outboundQueue = new Map<string, Promise<void>>();
+
     private debouncer = new MessageDebouncer(async (phoneNumber, fullMessage, sessionId) => {
-        try {
-            const AIResponse = await processAIMessage(phoneNumber, fullMessage);
-            this.sendMessage(AIResponse, sessionId);
-        } catch (error) {
-            console.log('❌ Erro no LangGraph:', error);
-        }
-    })
+        await this.enqueueOutbound(phoneNumber, async () => {
+            try {
+                const AIResponse = await processAIMessage(phoneNumber, fullMessage);
+                await this.sendMessageSequence(AIResponse, sessionId, phoneNumber);
+            } catch (error) {
+                logger.error({ err: error, phoneNumber }, '❌ Erro no LangGraph');
+            }
+        });
+    });
+
+    private enqueueOutbound(phoneNumber: string, task: () => Promise<void>): Promise<void> {
+        const previous = this.outboundQueue.get(phoneNumber) ?? Promise.resolve();
+        const next = previous
+            .catch(() => undefined)
+            .then(task);
+
+        this.outboundQueue.set(phoneNumber, next);
+
+        return next.finally(() => {
+            if (this.outboundQueue.get(phoneNumber) === next) {
+                this.outboundQueue.delete(phoneNumber);
+            }
+        });
+    }
 
     async login() {
         console.log('🔄 Tentando fazer login como Agente Fantasma...');
@@ -57,7 +84,6 @@ export class NeppoWsClient {
         this.stompClient = new Client({
             brokerURL: 'wss://juliocasas.neppo.com.br/chat/ws/websocket',
 
-            // 🔥 O SEGREDO ESTAVA AQUI O TEMPO TODO 🔥
             connectHeaders: {
                 resource: this.botResource
             },
@@ -91,18 +117,16 @@ export class NeppoWsClient {
 
         console.log(`🎧 Ligando escutas para o resource: ${this.botResource}`);
 
-        // 1. Escuta a lista de atendimentos
-        this.stompClient.subscribe(`/user/exchange/amq.direct/list.attendance/resource/${this.botResource}`, (frame) => {
+        this.stompClient.subscribe(`/user/exchange/amq.direct/list.attendance/resource/${this.botResource}`, () => {
             console.log("✅ Servidor reconheceu nossa aba! Recebemos a lista de atendimentos.");
         });
 
-        // 2. Escuta as mensagens de chat!
         const messagesQueue = `/user/exchange/amq.direct/chat.message/resource/${this.botResource}`;
         this.stompClient.subscribe(messagesQueue, async (frame) => {
             let payload;
             try {
                 payload = JSON.parse(frame.body);
-            } catch (err) {
+            } catch {
                 console.warn(`⚠️ WebSocket recebeu uma mensagem fora do padrão (não é JSON). Conteúdo: ${frame.body}`);
                 if (frame.body.includes('#FORCE_DISCONNECT')) {
                     console.error("🔴 A Neppo enviou um comando de desconexão forçada!");
@@ -116,27 +140,22 @@ export class NeppoWsClient {
                 const sessionId = payload.sessionId;
                 console.log(`\n📩 MENSAGEM DO CLIENTE [${phoneNumber}]: ${clientText}`);
                 this.debouncer.add(phoneNumber, clientText, sessionId);
-
-
             }
         });
 
-        // 3. Outras filas obrigatórias do painel
         this.stompClient.subscribe(`/user/exchange/amq.direct/chat.internal.message/resource/${this.botResource}`, () => { });
         this.stompClient.subscribe(`/user/exchange/amq.direct/chat.entity.update/resource/${this.botResource}`, () => { });
         this.stompClient.subscribe(`/user/exchange/notifications/resource/${this.botResource}`, () => { });
 
-        // 4. Bate o ponto
         this.stompClient.publish({
             destination: '/app/list.attendance',
             body: '[object Object]'
         });
     }
 
-    sendMessage(text: string, sessionId: number) {
+    private publishText(text: string, sessionId: number) {
         if (!this.stompClient || !this.stompClient.connected) return;
 
-        console.log(`💬 Disparando: "${text}"...`);
         const createResource = () => Math.random().toString(36).substring(2, 10);
 
         const payload = {
@@ -158,6 +177,59 @@ export class NeppoWsClient {
         });
     }
 
+    sendMessage(text: string, sessionId: number) {
+        console.log(`💬 Disparando: "${text}"...`);
+        this.publishText(text, sessionId);
+    }
+
+    async sendMessageSequence(text: string, sessionId: number, phoneNumber?: string) {
+        const cleaned = sanitizeOutboundText(text);
+        if (!cleaned) {
+            logger.warn({ phoneNumber }, '⚠️ Resposta vazia após sanitização; envio cancelado');
+            return;
+        }
+
+        if (!env.MESSAGE_SPLIT_ENABLED) {
+            const blocks = parseMarkedResponse(cleaned);
+            this.sendMessage(blocks.join('\n\n'), sessionId);
+            return;
+        }
+
+        const chunks = prepareOutboundMessages(cleaned);
+
+        if (!/<<<INTRO>>>/i.test(cleaned) && chunks.length === 1) {
+            logger.warn(
+                { phoneNumber, preview: text.slice(0, 80) },
+                '⚠️ Resposta sem marcadores semânticos; enviando como bolha única'
+            );
+        }
+
+        logger.info(
+            {
+                phoneNumber,
+                bubbleCount: chunks.length,
+                previews: chunks.map((c) => c.slice(0, 60)),
+            },
+            '📤 Enviando sequência humanizada'
+        );
+
+        for (let i = 0; i < chunks.length; i++) {
+            if (i > 0) {
+                const delayMs = randomInterMessageDelayMs();
+                logger.info({ phoneNumber, delayMs, index: i }, '⏳ Aguardando antes da próxima bolha');
+                await sleep(delayMs);
+            }
+            console.log(`💬 Disparando bolha ${i + 1}/${chunks.length}: "${chunks[i].slice(0, 80)}..."`);
+            this.publishText(chunks[i], sessionId);
+        }
+    }
+
+    /** Enfileira envio para o mesmo telefone (evita intercalar bolhas de turnos diferentes). */
+    enqueueSendSequence(phoneNumber: string, text: string, sessionId: number): Promise<void> {
+        return this.enqueueOutbound(phoneNumber, () =>
+            this.sendMessageSequence(text, sessionId, phoneNumber)
+        );
+    }
 }
 
 export const neppoWsClient = new NeppoWsClient();

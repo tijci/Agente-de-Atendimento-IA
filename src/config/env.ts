@@ -17,4 +17,10 @@ export const env = {
     KSI_API_URL: process.env.KSI_API_URL || '',
     KSI_API_TOKEN: process.env.KSI_API_TOKEN || '',
 
+    MESSAGE_SPLIT_ENABLED: process.env.MESSAGE_SPLIT_ENABLED !== 'false',
+    /** Se true, mescla blocos adjacentes aleatoriamente; se false, 1 bolha por bloco/parágrafo. */
+    MESSAGE_SPLIT_RANDOMIZE: process.env.MESSAGE_SPLIT_RANDOMIZE === 'true',
+    MESSAGE_DELAY_MIN_MS: Number(process.env.MESSAGE_DELAY_MIN_MS) || 1000,
+    MESSAGE_DELAY_MAX_MS: Number(process.env.MESSAGE_DELAY_MAX_MS) || 5000,
+
 } as const;

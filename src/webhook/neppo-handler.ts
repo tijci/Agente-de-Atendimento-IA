@@ -20,7 +20,7 @@ export const neppoWebhookHandler = async (req: Request, res: Response) => {
         logger.info({ phoneNumber, responseAI }, '💬 Resposta pronta para envio');
         const sessionId = Number(payload.component?.sessionId);
         if (sessionId) {
-            await neppoWsClient.sendMessage(responseAI, sessionId);
+            await neppoWsClient.enqueueSendSequence(phoneNumber, responseAI, sessionId);
         } else {
             logger.warn({ phoneNumber }, '❌ Session ID não encontrado para envio via WebSocket');
         }

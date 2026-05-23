@@ -1,9 +1,10 @@
 import { ChatOpenAI } from "@langchain/openai";
-import { SystemMessage } from "@langchain/core/messages";
+import { AIMessage, SystemMessage } from "@langchain/core/messages";
 import { AgentState } from "../../state/conversation-state";
 import { env } from "../../config/env";
 import { logger } from "../../utils/logger";
 import { searchPropertiesTool } from "../tools/search-properties";
+import { findLastHumanContent, shouldForcePropertySearch } from "../../utils/search-intent";
 
 const llm = new ChatOpenAI({
     model: env.OPENAI_MODEL,
@@ -29,7 +30,8 @@ Antes de consultar a base de conhecimento, você PRECISA ter ao menos:
 - Bairro ou região desejada
 Se o cliente não informou esses três dados, pergunte de forma simples e direta. NÃO apresente nenhum imóvel antes de ter esses critérios mínimos. Não invente opções "para começar".
 REGRA DE AGILIDADE COMERCIAL (INVIOLÁVEL):
-- Se o cliente já informou os critérios mínimos (Transação, Tipo e Região/Bairro/Rua) ou se ele disser que viu um imóvel específico em um endereço/localização, acione a ferramenta de busca IMEDIATAMENTE.
+- Se o cliente já informou os critérios mínimos (Transação, Tipo e Região/Bairro/Rua) ou se ele disser que viu um imóvel específico em um endereço/localização, acione a ferramenta buscar_imoveis IMEDIATAMENTE na mesma resposta — SEM texto ao cliente antes disso.
+- PROIBIDO dizer que vai buscar, verificar, que precisa de um momento ou que já volta. Chame buscar_imoveis primeiro; só depois monte os marcadores com os imóveis retornados.
 - NÃO fique fazendo perguntas de qualificação comercial adicionais (como faixa de preço, quantidade de banheiros, fiador ou e-mail) antes de realizar a primeira busca e mostrar as opções para ele. Mostre que somos rápidos!
 ## IDENTIFICAÇÃO DO LEAD E ACIONAMENTO DO CORRETOR
 Antes de acionar qualquer função de encaminhamento, você OBRIGATORIAMENTE precisa ter coletado o nome diretamente do cliente nesta conversa:
@@ -47,8 +49,27 @@ FLUXO OBRIGATÓRIO:
 5. Somente após ter nome + e-mail real, você aciona a função de encaminhamento.
 Se o cliente já forneceu nome e e-mail em mensagens anteriores desta conversa, não pergunte novamente. Use o que já foi informado e acione a função.
 ## REGRA DE COMUNICAÇÃO (CRÍTICA)
-1. Envie apenas UMA mensagem por vez. Nunca envie duas mensagens seguidas sem aguardar resposta do cliente.
-2. NUNCA envie mensagens intermediárias como "aguarde", "um momento", "vou verificar agora". Só responda quando já tiver o resultado em mãos.
+1. PROIBIDO: "aguarde", "um momento", "vou buscar", "vou verificar", "já volto", "estou buscando". Se precisa de imóveis da base, chame buscar_imoveis — não avise o cliente antes.
+2. Com critérios mínimos completos, sua primeira ação é SEMPRE buscar_imoveis (tool call), nunca uma resposta só com marcadores prometendo busca depois.
+3. Cada turno seu é UMA resposta estruturada; o sistema divide em bolhas no WhatsApp. Não escreva texto fora dos marcadores abaixo.
+## FORMATO DE RESPOSTA (OBRIGATÓRIO)
+Toda resposta DEVE usar exatamente estes marcadores, nesta ordem, sem Markdown e sem texto fora deles:
+
+<<<INTRO>>>
+(saudação ou confirmação curta — 1 frase)
+<<<MAIN>>>
+(conteúdo principal: imóveis, busca, explicação, dados)
+<<<SECONDARY>>>
+(opcional — complemento ou oferta; se não houver, omita este bloco inteiro, incluindo o marcador)
+<<<CTA>>>
+(pergunta final ou próximo passo — 1 frase)
+
+Regras do formato:
+- <<<INTRO>>>, <<<MAIN>>> e <<<CTA>>> são obrigatórios em respostas normais.
+- <<<SECONDARY>>> é opcional.
+- Respostas muito curtas podem usar só <<<INTRO>>> + <<<CTA>>> ou apenas <<<MAIN>>>.
+- Listagens de imóveis ficam em <<<MAIN>>>.
+- A pergunta final sempre em <<<CTA>>>.
 ## IMÓVEL ATIVO (REGRA DE CONTEXTO)
 Durante a conversa, existe sempre um IMÓVEL ATIVO em discussão.
 1. Quando o cliente enviar um link externo ou informar um código, esse imóvel passa a ser o IMÓVEL ATIVO.
@@ -98,6 +119,7 @@ Para cada imóvel válido, mostre:
 📍 Bairro: [bairro]
 🔗 Link: https://www.juliocasas.com.br/pesquisa-de-imoveis/?codigo=[codigo]
 O link deve ser bruto, sem Markdown. Não use # para títulos nem ** para negrito. Use apenas emojis e texto simples.
+PROIBIDO imagens em Markdown (![...](url)). Envie apenas o link 🔗 em texto.
 O [codigo] deve ser apenas numero, não coloque L nem V antes do código
 ## O QUE VOCÊ NUNCA PODE AFIRMAR SEM TER NA BASE DE CONHECIMENTO
 - Endereço exato do imóvel
@@ -112,6 +134,10 @@ Após apresentar os imóveis, colete Nome e Email do cliente. Caso ele queira ag
 - Responda apenas texto simples com emojis permitidos. Sem Markdown.
 `;
 
+const llmSearchRequired = llm.bindTools([searchPropertiesTool], {
+    tool_choice: 'buscar_imoveis',
+});
+
 export const sdrNode = async (state: typeof AgentState.State) => {
     logger.info({ phoneNumber: state.phoneNumber }, '🤝 SDR processando mensagem...');
     const messagesWithSystem = [
@@ -119,7 +145,37 @@ export const sdrNode = async (state: typeof AgentState.State) => {
         ...state.messages,
     ];
 
-    const response = await llmWithTools.invoke(messagesWithSystem);
-    logger.info({ response: response.content }, '✅ SDR respondeu');
+    let response;
+    if (shouldForcePropertySearch(state.messages)) {
+        const pedido = findLastHumanContent(state.messages);
+        logger.info({ phoneNumber: state.phoneNumber, pedido }, '🔎 Critérios completos — forçando buscar_imoveis');
+        response = await llmSearchRequired.invoke(messagesWithSystem);
+        if (!response.tool_calls?.length) {
+            logger.warn({ phoneNumber: state.phoneNumber }, '⚠️ Modelo não retornou tool_call; invocando busca direta');
+            const raw = await searchPropertiesTool.invoke({ pedido_livre: pedido });
+            const toolCallId = `direct_${Date.now()}`;
+            return {
+                messages: [
+                    new AIMessage({
+                        content: '',
+                        tool_calls: [
+                            {
+                                id: toolCallId,
+                                name: 'buscar_imoveis',
+                                args: { pedido_livre: pedido },
+                            },
+                        ],
+                    }),
+                ],
+            };
+        }
+    } else {
+        response = await llmWithTools.invoke(messagesWithSystem);
+    }
+
+    logger.info(
+        { toolCalls: response.tool_calls?.length ?? 0, hasContent: Boolean(response.content) },
+        '✅ SDR respondeu'
+    );
     return { messages: [response] };
 }
