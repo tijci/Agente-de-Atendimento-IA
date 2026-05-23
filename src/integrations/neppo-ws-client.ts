@@ -5,6 +5,7 @@ import WebSocket from "ws";
 import { processAIMessage } from '../agents/graph';
 import { MessageDebouncer } from '../utils/message-debouncer';
 import { translator } from '../utils/message-translator';
+import { env } from "../config/env";
 
 export class NeppoWsClient {
     private cookieSession: string = '';
@@ -21,9 +22,9 @@ export class NeppoWsClient {
 
     async login() {
         console.log('🔄 Tentando fazer login como Agente Fantasma...');
-        const passwordBase64 = Buffer.from('TesteTI123#').toString('base64');
+        const passwordBase64 = Buffer.from(`${env.NEPPO_PASSWORD}`).toString('base64');
         const body = new URLSearchParams({
-            username: 'teste.ti',
+            username: env.NEPPO_USERNAME,
             password: passwordBase64,
             verificationToken: 'null'
         });
