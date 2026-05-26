@@ -15,13 +15,13 @@ const llm = new ChatOpenAI({
 const captadorSchema = z.object({
     reply: z.string().describe("Mensagem simpática para o cliente via WhatsApp (sem markdown)."),
     extractedInfo: z.object({
-        ownerName: z.string().optional().describe("Nome do proprietário."),
-        ownerEmail: z.string().optional().describe("E-mail do proprietário."),
-        propertyType: z.string().optional().describe("Tipo de imóvel (casa, apartamento, etc.)."),
-        propertyAddress: z.string().optional().describe("Endereço ou bairro do imóvel."),
-        targetValue: z.number().optional().describe("Valor pretendido de venda ou aluguel."),
-        observations: z.string().optional().describe("Outras observações sobre o imóvel."),
-    }).optional(),
+        ownerName: z.string().nullable().describe("Nome do proprietário."),
+        ownerEmail: z.string().nullable().describe("E-mail do proprietário."),
+        propertyType: z.string().nullable().describe("Tipo de imóvel (casa, apartamento, etc.)."),
+        propertyAddress: z.string().nullable().describe("Endereço ou bairro do imóvel."),
+        targetValue: z.number().nullable().describe("Valor pretendido de venda ou aluguel."),
+        observations: z.string().nullable().describe("Outras observações sobre o imóvel."),
+    }).nullable(),
     isComplete: z.boolean().describe("Se coletou pelo menos Nome, Tipo de Imóvel, Endereço e Valor."),
 });
 
@@ -29,7 +29,10 @@ const captadorSchema = z.object({
 const SYSTEM_PROMPT = `
 Você é o Daniel, especialista em captação de imóveis da Julio Casas Imóveis.
 Seu objetivo é conversar com o proprietário que deseja anunciar (vender ou alugar) o seu imóvel e coletar os dados básicos necessários.
-Responda como se estivesse no WhatsApp (mensagens simpáticas, diretas, 1 a 2 frases por vez).
+"Responda como se estivesse no WhatsApp (mensagens simpáticas e diretas). " +
+"MUITO IMPORTANTE: Quebre suas frases com quebras de linha DUPLAS (Pressione Enter duas vezes) " +
+"para que o sistema envie em bolhas separadas. " +
+"NUNCA escreva parágrafos longos, escreva no máximo 10 palavras por linha
 Pergunte uma informação de cada vez de forma natural, para não cansar o cliente.
 Dados obrigatórios a serem coletados:
 1. Nome completo (ou primeiro nome) do proprietário.
@@ -61,12 +64,20 @@ Dados já coletados até agora:
     const result = await structuredLlm.invoke(messagesWithSystem);
     logger.info({ result }, '✅ Captador respondeu');
 
-    const updates: any = {
-        messages: [new AIMessage(result.reply)],
-        captacaoInfo: { ...state.captacaoInfo, ...result.extractedInfo },
-    };
-    if (result.isComplete) {
-        updates.currentAgent = 'RECEPCIONISTA';
+    const mergedCaptacaoInfo = { ...state.captacaoInfo }
+    if (result.extractedInfo) {
+        for (const [key, value] of Object.entries(result.extractedInfo)) {
+            if (value !== null && value !== undefined) {
+                (mergedCaptacaoInfo as any)[key] = value;
+            }
+        }
+        const updates: any = {
+            messages: [new AIMessage(result.reply)],
+            captacaoInfo: mergedCaptacaoInfo,
+        };
+        if (result.isComplete) {
+            updates.currentAgent = 'RECEPCIONISTA';
+        }
+        return updates;
     }
-    return updates;
 }

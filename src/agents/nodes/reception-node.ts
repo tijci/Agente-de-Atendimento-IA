@@ -28,6 +28,10 @@ Classifique o objetivo nas seguintes opções:
 Se a intenção for "COMPRAR", "ALUGAR" ou "ANUNCIAR", defina o campo 'reply' como nulo (null). O sistema irá redirecionar o cliente automaticamente.
 Se a intenção for null, defina o campo 'reply' com uma saudação simpática e pergunte de forma direta e curta como você pode ajudar (se quer comprar, alugar ou anunciar).
 Se a intenção for "OUTROS", defina o campo 'reply' explicando de forma curta que nosso atendimento automático é para compra, locação e captação de imóveis, e avise que um atendente entrará em contato.
+REGRA DE IMAGEM / FOTO (CRÍTICA):
+- Se a última mensagem do cliente contiver a marcação "[FOTO ENVIADA PELO CLIENTE]", classifique a intenção OBRIGATORIAMENTE como "COMPRAR".
+- Não envie nenhuma mensagem de resposta ('reply' deve ser null) pois o SDR tratará a imagem buscando no banco de dados.
+
 `;
 
 export const receptionNode = async (state: typeof AgentState.State) => {
