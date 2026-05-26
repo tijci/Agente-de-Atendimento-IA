@@ -6,8 +6,10 @@
  */
 import { StateGraph, START, END } from "@langchain/langgraph";
 import { AgentState } from "../state/conversation-state";
+import { receptionNode } from "./nodes/reception-node";
 import { sdrNode } from "./nodes/sdr-node";
-import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
+import { propertyScoutNode } from "./nodes/property-scout";
+import { HumanMessage, AIMessage } from "@langchain/core/messages";
 import { logger } from "../utils/logger";
 import { MemorySaver } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
@@ -16,33 +18,15 @@ import { findLastHumanContent, shouldForcePropertySearch } from "../utils/search
 
 const toolsNode = new ToolNode([searchPropertiesTool]);
 
-const forceSearchNode = async (state: typeof AgentState.State) => {
-    const pedido = findLastHumanContent(state.messages);
-    logger.info({ phoneNumber: state.phoneNumber, pedido }, '🔁 Recuperação: busca obrigatória após resposta sem tool');
-
-    const raw = await searchPropertiesTool.invoke({ pedido_livre: pedido });
-    const toolCallId = `forced_${Date.now()}`;
-
-    return {
-        messages: [
-            new AIMessage({
-                content: '',
-                tool_calls: [
-                    {
-                        id: toolCallId,
-                        name: 'buscar_imoveis',
-                        args: { pedido_livre: pedido },
-                    },
-                ],
-            }),
-            new ToolMessage({
-                content: typeof raw === 'string' ? raw : JSON.stringify(raw),
-                tool_call_id: toolCallId,
-                name: 'buscar_imoveis',
-            }),
-        ],
-    };
-};
+const routeAfterReception = (state: typeof AgentState.State) => {
+    if (state.currentAgent === 'SDR') {
+        return 'sdr';
+    }
+    if (state.currentAgent === 'CAPTADOR') {
+        return 'captador';
+    }
+    return END;
+}
 
 const shouldContinue = (state: typeof AgentState.State) => {
     const lastMessage = state.messages[state.messages.length - 1];
@@ -61,13 +45,15 @@ const shouldContinue = (state: typeof AgentState.State) => {
 };
 
 const workflow = new StateGraph(AgentState)
-    .addNode('sdr', sdrNode)
-    .addNode('tools', toolsNode)
-    .addNode('force_search', forceSearchNode)
-    .addEdge(START, 'sdr')
-    .addConditionalEdges('sdr', shouldContinue)
-    .addEdge('tools', 'sdr')
-    .addEdge('force_search', 'sdr');
+    .addNode("reception", receptionNode)
+    .addNode("sdr", sdrNode)
+    .addNode("captador", propertyScoutNode)
+    .addNode("tools", toolsNode)
+    .addEdge(START, "reception")
+    .addConditionalEdges("reception", routeAfterReception)
+    .addConditionalEdges("sdr", shouldContinue)
+    .addEdge("tools", "sdr")
+    .addEdge("captador", END);
 
 const checkpointer = new MemorySaver();
 

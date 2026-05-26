@@ -12,6 +12,15 @@ interface LeadInfo {
     observation?: string;
 }
 
+interface CaptacaoInfo {
+    ownerName?: string;
+    ownerEmail?: string;
+    propertyType?: string;
+    propertyAddress?: string;
+    targetValue?: number;
+    observations?: string;
+}
+
 export const AgentState = Annotation.Root({
     messages: Annotation<BaseMessage[]>({
         reducer: messagesStateReducer,
@@ -21,13 +30,21 @@ export const AgentState = Annotation.Root({
         reducer: (_, novo) => novo,
         default: () => '',
     }),
-    step: Annotation<'TRIAGEM' | 'CONVERSA' | 'BUSCA' | 'QUALIFICACAO' | 'HANDOFF'>({
+    currentAgent: Annotation<'RECEPCIONISTA' | 'SDR' | 'CAPTADOR'>({
         reducer: (_, novo) => novo,
-        default: () => 'TRIAGEM',
+        default: () => 'RECEPCIONISTA',
+    }),
+    intent: Annotation<'COMPRAR' | 'ALUGAR' | 'ANUNCIAR' | 'OUTROS' | null>({
+        reducer: (_, novo) => novo,
+        default: () => null,
     }),
     leadInfo: Annotation<LeadInfo>({
-        reducer: (atual, novo) => ({ ...atual, ...novo }),  
+        reducer: (atual, novo) => ({ ...atual, ...novo }),
         default: () => ({ interest: null }),
+    }),
+    captacaoInfo: Annotation<CaptacaoInfo>({
+        reducer: (atual, novo) => ({ ...atual, ...novo }),
+        default: () => ({}),
     }),
     leadCreated: Annotation<boolean>({
         reducer: (_, novo) => novo,
