@@ -1,7 +1,7 @@
 {
   "name": "agente-de-atendimento-ia",
   "version": "1.0.0",
-  "description": "",
+  "description": "Agente de atendimento IA para Julio Casas Imóveis — WhatsApp via Neppo, LangGraph e busca vetorial de imóveis",
   "main": "index.js",
   "directories": {
     "doc": "docs"

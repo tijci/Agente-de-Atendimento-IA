@@ -1,3 +1,8 @@
+/**
+ * Worker thread: catálogo vetorial de imóveis, busca semântica, CLIP e OCR.
+ * @module workers/ai-worker
+ * @see docs/AI-WORKER.md
+ */
 import sharp from "sharp";
 import { createWorker } from "tesseract.js";
 import { parentPort } from "worker_threads";

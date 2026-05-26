@@ -22,7 +22,7 @@ class NeppoPresence {
             this.page = await this.browser.newPage();
             await this.page.goto('https://juliocasas.neppo.com.br/chat', {
                 waitUntil: 'networkidle2',
-                timeout: 30000
+                timeout: 60000
             });
             const loginResult = await this.page.evaluate(async () => {
                 const passwordBase64 = btoa('TesteTI123#');

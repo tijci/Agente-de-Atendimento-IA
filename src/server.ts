@@ -1,3 +1,11 @@
+/**
+ * Ponto de entrada HTTP do agente de atendimento.
+ * @module server
+ * @see docs/ARCHITECTURE.md
+ * @see docs/DEPLOYMENT.md
+ *
+ * Bootstrap: Express → login Neppo WS → STOMP → Agente Fantasma (Puppeteer).
+ */
 import 'dotenv/config';
 import express from 'express'
 import { neppoWebhookHandler } from './webhook/neppo-handler';
