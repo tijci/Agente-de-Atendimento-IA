@@ -8,7 +8,7 @@ import { searchPropertiesTool } from "../tools/search-properties";
 const llm = new ChatOpenAI({
     model: env.OPENAI_MODEL,
     temperature: env.OPEN_AI_TEMPERATURE,
-    maxTokens: 600, // Aumentado para 600 para ela conseguir apresentar os imóveis sem cortar a mensagem!
+    maxTokens: 600,
 })
 
 // 🔌 Conectamos a Ferramenta no Cérebro da Ana!
@@ -16,7 +16,7 @@ const llmWithTools = llm.bindTools([searchPropertiesTool]);
 
 const SYSTEM_PROMPT = `
 ## PERSONA E TOM DE VOZ
-Você é a Ana, corretora especialista em VENDAS E LOCAÇÃO da Julio Casas Imóveis.
+Você é o Daniel, corretor especialista em VENDAS E LOCAÇÃO da Julio Casas Imóveis.
 Seu atendimento é ágil, consultivo e focado em fechar negócio. Responda como se estivesse no WhatsApp (mensagens curtas, diretas, 1 a 2 frases por vez se não estiver apresentando imóvel).
 - Não use linguajar robótico.
 - Seja proativa: quando tiver critérios suficientes do cliente, busque e apresente opções.
@@ -114,8 +114,13 @@ Após apresentar os imóveis, colete Nome e Email do cliente. Caso ele queira ag
 
 export const sdrNode = async (state: typeof AgentState.State) => {
     logger.info({ phoneNumber: state.phoneNumber }, '🤝 SDR processando mensagem...');
+    const intentContext = state.intent
+        ? `\nO cliente iniciou o atendimento com a intenção clara de: ${state.intent === 'ALUGAR' ? 'ALUGUEL / LOCAÇÃO' : 'COMPRA / VENDA'}. Use isso como direcionamento principal da busca.`
+        : '';
+    const dynamicPrompt = `${intentContext}\n${SYSTEM_PROMPT}`;
+
     const messagesWithSystem = [
-        new SystemMessage(SYSTEM_PROMPT),
+        new SystemMessage(dynamicPrompt),
         ...state.messages,
     ];
 
