@@ -1,3 +1,6 @@
+import { extractPortalUrl } from './portal-scraper';
+
+
 export class MessageTranslator {
     async translate(payload: any): Promise<string> {
         const text = payload.message || '';
@@ -5,7 +8,17 @@ export class MessageTranslator {
         const isImage = text.includes('.jpg') || text.includes('.png') || text.includes('.webp');
         if (isAudio) return await this.transcribeAudio(text);
         if (isImage) return `[FOTO ENVIADA PELO CLIENTE] O cliente enviou uma foto para busca de imóveis visualmente semelhantes no catálogo. Use a ferramenta de busca de imóveis passando esta URL exatamente no parâmetro 'foto_url': ${text}`;
+       
+        const portalUrl = extractPortalUrl(text);
+        if (portalUrl) {
+            return (
+            `[LINK DE PORTAL IMOBILIÁRIO] O cliente enviou este link de anúncio: ${portalUrl}\n` +
+            `Use a ferramenta buscar_imoveis passando esta URL no parâmetro 'link_url'. ` +
+            `Não peça código nem informações adicionais — execute a busca diretamente.`
+        );
+        }
         return text;
+
     }
 
     private async transcribeAudio(url: string): Promise<string> {

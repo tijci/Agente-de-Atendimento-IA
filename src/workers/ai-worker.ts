@@ -9,7 +9,7 @@ import { parentPort } from "worker_threads";
 import Papa from 'papaparse';
 import fs from 'fs';
 import path from 'path';
-
+import { scrapePortalPage } from '../utils/portal-scraper';
 
 let extractor: any = null;
 let clipModel: any = null;
@@ -531,150 +531,150 @@ const readyPromise = sincronizarVetores().catch(err => {
 
 let ocrWorker: any = null;
 
-function formatarImovel(i:any, score?:number, evidencias:string[] = []) {
+function formatarImovel(i: any, score?: number, evidencias: string[] = []) {
     return {
-    ListingID: i.id,
-    Title: i.titulo,
-    Transacao: i.tipo_transacao === "For Rent" ? "Locação" : "Venda",
-    PropertyType: i.tipo_imovel,
-    Cidade: i.cidade,
-    Bairro: i.bairro,
-    Valor: i.preco,
-    LinkFoto: i.imagem_url,
-    Score: score !== undefined ? score.toFixed(3) : undefined,
-    Evidencias: evidencias,
-  };
+        ListingID: i.id,
+        Title: i.titulo,
+        Transacao: i.tipo_transacao === "For Rent" ? "Locação" : "Venda",
+        PropertyType: i.tipo_imovel,
+        Cidade: i.cidade,
+        Bairro: i.bairro,
+        Valor: i.preco,
+        LinkFoto: i.imagem_url,
+        Score: score !== undefined ? score.toFixed(3) : undefined,
+        Evidencias: evidencias,
+    };
 }
 
 function normalizarCodigo(texto: string) {
-  return texto.match(/\b[LV]\s?\d{3,6}\b/i)?.[0]?.replace(/\s/g, "").toUpperCase();
+    return texto.match(/\b[LV]\s?\d{3,6}\b/i)?.[0]?.replace(/\s/g, "").toUpperCase();
 }
 
-function extrairNumerosCodigo(texto:string) {
-  return texto?.replace(/\D/g, "") || "";
+function extrairNumerosCodigo(texto: string) {
+    return texto?.replace(/\D/g, "") || "";
 }
 
 function parecePrint(textoOuUrl: string) {
-  return /print|screenshot|whatsapp|portal|imovel|juliocasas|zap|vivareal|olx|imovelweb|chavesnamao/i.test(textoOuUrl);
+    return /print|screenshot|whatsapp|portal|imovel|juliocasas|zap|vivareal|olx|imovelweb|chavesnamao/i.test(textoOuUrl);
 }
 
 async function baixarImagemBuffer(url: string) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Falha ao baixar imagem: ${response.status}`);
-  return Buffer.from(await response.arrayBuffer());
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Falha ao baixar imagem: ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
 }
 
 async function imagemProvavelmentePrint(imageUrl: string) {
-  try {
-    const metadata = await sharp(await baixarImagemBuffer(imageUrl)).metadata();
-    if (!metadata.width || !metadata.height) return false;
-    return metadata.height > metadata.width && metadata.height / metadata.width >= 1.35;
-  } catch {
-    return false;
-  }
+    try {
+        const metadata = await sharp(await baixarImagemBuffer(imageUrl)).metadata();
+        if (!metadata.width || !metadata.height) return false;
+        return metadata.height > metadata.width && metadata.height / metadata.width >= 1.35;
+    } catch {
+        return false;
+    }
 }
 
 async function extrairTextoOCR(imageUrl: string) {
-  if (!ocrWorker) {
-    ocrWorker = await createWorker("por+eng");
-  }
-  const buffer = await baixarImagemBuffer(imageUrl);
-  const prepared = await sharp(buffer)
-    .resize({ width: 1400, withoutEnlargement: true })
-    .grayscale()
-    .normalize()
-    .png()
-    .toBuffer();
+    if (!ocrWorker) {
+        ocrWorker = await createWorker("por+eng");
+    }
+    const buffer = await baixarImagemBuffer(imageUrl);
+    const prepared = await sharp(buffer)
+        .resize({ width: 1400, withoutEnlargement: true })
+        .grayscale()
+        .normalize()
+        .png()
+        .toBuffer();
 
-  const result = await ocrWorker.recognize(prepared);
-  return result.data.text || "";
+    const result = await ocrWorker.recognize(prepared);
+    return result.data.text || "";
 }
 
 function buscarPorCodigoLocal(codigo: string) {
-  const codigoLimpo = codigo.replace(/\D/g, "");
-  return vetorDeImoveis.find(
-    (i) =>
-      i.id?.toLowerCase() === codigo.toLowerCase() ||
-      i.id?.replace(/\D/g, "") === codigoLimpo
-  );
+    const codigoLimpo = codigo.replace(/\D/g, "");
+    return vetorDeImoveis.find(
+        (i) =>
+            i.id?.toLowerCase() === codigo.toLowerCase() ||
+            i.id?.replace(/\D/g, "") === codigoLimpo
+    );
 }
 
 async function buscarPorTextoInterno(texto: string, sinais = extrairSinaisBusca(texto)) {
-  if (!extractor) {
-    await carregarModeloTexto();
-  }
+    if (!extractor) {
+        await carregarModeloTexto();
+    }
 
-  const outputTexto = await extractor(texto, { pooling: "mean", normalize: true });
-  const vetorPedido = Array.from(outputTexto.data) as number[];
-  const queryNorm = sinais.normalized;
-  const queryWords = queryNorm.split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
-  return vetorDeImoveis
-    .map((imovel) => {
-      const semanticScore = calcularSimilaridade(vetorPedido, imovel.vetorTexto);
-      const textoComparar = textoComparavelImovel(imovel);
-      const objetivo = avaliarCompatibilidadeObjetiva(imovel, sinais);
+    const outputTexto = await extractor(texto, { pooling: "mean", normalize: true });
+    const vetorPedido = Array.from(outputTexto.data) as number[];
+    const queryNorm = sinais.normalized;
+    const queryWords = queryNorm.split(/\s+/).filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+    return vetorDeImoveis
+        .map((imovel) => {
+            const semanticScore = calcularSimilaridade(vetorPedido, imovel.vetorTexto);
+            const textoComparar = textoComparavelImovel(imovel);
+            const objetivo = avaliarCompatibilidadeObjetiva(imovel, sinais);
 
-      if (objetivo.bloqueios.length > 0) {
-        return { ...imovel, score: -Infinity, objectiveScore: 0, evidencias: objetivo.evidencias };
-      }
+            if (objetivo.bloqueios.length > 0) {
+                return { ...imovel, score: -Infinity, objectiveScore: 0, evidencias: objetivo.evidencias };
+            }
 
-      const matchCount = queryWords.filter((w) => textoComparar.includes(w)).length;
-      const keywordBoost = Math.min(matchCount * 0.08, 0.40);
+            const matchCount = queryWords.filter((w) => textoComparar.includes(w)).length;
+            const keywordBoost = Math.min(matchCount * 0.08, 0.40);
 
-      return {
-        ...imovel,
-        score: semanticScore + keywordBoost + objetivo.objectiveScore,
-        objectiveScore: objetivo.objectiveScore,
-        evidencias: [
-          ...objetivo.evidencias,
-          ...(matchCount > 0 ? [`${matchCount} termos do print bateram com a base`] : []),
-        ],
-      };
-    })
-    .filter((imovel) => Number.isFinite(imovel.score))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 8);
+            return {
+                ...imovel,
+                score: semanticScore + keywordBoost + objetivo.objectiveScore,
+                objectiveScore: objetivo.objectiveScore,
+                evidencias: [
+                    ...objetivo.evidencias,
+                    ...(matchCount > 0 ? [`${matchCount} termos do print bateram com a base`] : []),
+                ],
+            };
+        })
+        .filter((imovel) => Number.isFinite(imovel.score))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8);
 }
 
 async function buscarVisualComConfianca(fotoUrl: string) {
-  if (!clipModel) {
-    await carregarModeloVisual();
-  }
+    if (!clipModel) {
+        await carregarModeloVisual();
+    }
 
-  const vetorCliente = await extrairVetorImagem(fotoUrl);
+    const vetorCliente = await extrairVetorImagem(fotoUrl);
 
-  const ranked = vetorDeImoveis
-    .filter((i) => i.vetoresImagens?.length > 0)
-    .map((i) => ({
-      ...i,
-      score: Math.max(...i.vetoresImagens.map((v: number[]) => calcularSimilaridade(vetorCliente, v))),
-    }))
-    .sort((a, b) => b.score - a.score);
+    const ranked = vetorDeImoveis
+        .filter((i) => i.vetoresImagens?.length > 0)
+        .map((i) => ({
+            ...i,
+            score: Math.max(...i.vetoresImagens.map((v: number[]) => calcularSimilaridade(vetorCliente, v))),
+        }))
+        .sort((a, b) => b.score - a.score);
 
-  const top = ranked[0];
-  const second = ranked[1];
-  const margin = top && second ? top.score - second.score : 1;
+    const top = ranked[0];
+    const second = ranked[1];
+    const margin = top && second ? top.score - second.score : 1;
 
-  if (top && top.score >= EXACT_THRESHOLD && margin >= EXACT_MARGIN) {
+    if (top && top.score >= EXACT_THRESHOLD && margin >= EXACT_MARGIN) {
+        return {
+            matchType: "exact",
+            confidence: "high",
+            source: "visual_clip",
+            items: [formatarImovel(top, top.score, ["Foto muito parecida com imagem do catálogo"])],
+        };
+    }
+
     return {
-      matchType: "exact",
-      confidence: "high",
-      source: "visual_clip",
-      items: [formatarImovel(top, top.score, ["Foto muito parecida com imagem do catálogo"])],
+        matchType: "candidates",
+        confidence: top?.score >= CANDIDATE_THRESHOLD ? "medium" : "low",
+        source: "visual_clip",
+        items: ranked
+            .filter((i) => i.score >= CANDIDATE_THRESHOLD)
+            .slice(0, 3)
+            .map((i) => formatarImovel(i, i.score, ["Semelhança visual com o catálogo"])),
     };
-  }
-
-  return {
-    matchType: "candidates",
-    confidence: top?.score >= CANDIDATE_THRESHOLD ? "medium" : "low",
-    source: "visual_clip",
-    items: ranked
-      .filter((i) => i.score >= CANDIDATE_THRESHOLD)
-      .slice(0, 3)
-      .map((i) => formatarImovel(i, i.score, ["Semelhança visual com o catálogo"])),
-  };
 }
-  
+
 parentPort?.on('message', async (message) => {
     try {
         await readyPromise;
@@ -701,93 +701,93 @@ parentPort?.on('message', async (message) => {
     }
 
     if (message.command === "BUSCAR_FOTO") {
-  try {
-    let ocrText = "";
-    const visualResult = await buscarVisualComConfianca(message.foto_url);
-    const deveTentarOCR =
-      visualResult.confidence !== "high" ||
-      parecePrint(message.foto_url) ||
-      await imagemProvavelmentePrint(message.foto_url);
-    let sinaisOCR: SearchSignals | null = null;
+        try {
+            let ocrText = "";
+            const visualResult = await buscarVisualComConfianca(message.foto_url);
+            const deveTentarOCR =
+                visualResult.confidence !== "high" ||
+                parecePrint(message.foto_url) ||
+                await imagemProvavelmentePrint(message.foto_url);
+            let sinaisOCR: SearchSignals | null = null;
 
-    if (deveTentarOCR) {
-      try {
-        ocrText = await extrairTextoOCR(message.foto_url);
-        sinaisOCR = extrairSinaisBusca(ocrText);
-      } catch (ocrError) {
-        console.warn("⚠️ [WORKER] OCR falhou, mantendo resultado visual:", ocrError);
-      }
-      const codigoOCR = sinaisOCR?.codigo || normalizarCodigo(ocrText);
+            if (deveTentarOCR) {
+                try {
+                    ocrText = await extrairTextoOCR(message.foto_url);
+                    sinaisOCR = extrairSinaisBusca(ocrText);
+                } catch (ocrError) {
+                    console.warn("⚠️ [WORKER] OCR falhou, mantendo resultado visual:", ocrError);
+                }
+                const codigoOCR = sinaisOCR?.codigo || normalizarCodigo(ocrText);
 
-      if (codigoOCR) {
-        const imovel = buscarPorCodigoLocal(codigoOCR);
-        if (imovel) {
-          parentPort?.postMessage({
-            requestId: message.requestId,
-            status: "CONCLUIDO",
-            data: {
-              matchType: "exact",
-              confidence: "high",
-              source: "ocr_code",
-              items: [formatarImovel(imovel, 1, [`Código encontrado no print: ${extrairNumerosCodigo(codigoOCR)}`])],
-            },
-          });
-          return;
+                if (codigoOCR) {
+                    const imovel = buscarPorCodigoLocal(codigoOCR);
+                    if (imovel) {
+                        parentPort?.postMessage({
+                            requestId: message.requestId,
+                            status: "CONCLUIDO",
+                            data: {
+                                matchType: "exact",
+                                confidence: "high",
+                                source: "ocr_code",
+                                items: [formatarImovel(imovel, 1, [`Código encontrado no print: ${extrairNumerosCodigo(codigoOCR)}`])],
+                            },
+                        });
+                        return;
+                    }
+                }
+            }
+
+            if (ocrText && sinaisOCR && temSinaisObjetivos(sinaisOCR)) {
+                const textCandidates = await buscarPorTextoInterno(ocrText, sinaisOCR);
+                const candidatosRelevantes = textCandidates.filter(
+                    (i) => i.score >= OCR_TEXT_CANDIDATE_THRESHOLD || i.objectiveScore >= 0.45
+                );
+                const melhores = candidatosRelevantes.slice(0, 3).map((i) =>
+                    formatarImovel(i, i.score, i.evidencias || ["Texto do print parecido com a base"])
+                );
+                const top = candidatosRelevantes[0];
+                const second = candidatosRelevantes[1];
+                const margin = top && second ? top.score - second.score : 1;
+                const exactByOcr =
+                    Boolean(top) &&
+                    temSinaisFortes(sinaisOCR) &&
+                    top.objectiveScore >= 0.62 &&
+                    (margin >= 0.18 || top.objectiveScore >= 0.90);
+
+                if (melhores.length > 0 || temSinaisFortes(sinaisOCR)) {
+                    parentPort?.postMessage({
+                        requestId: message.requestId,
+                        status: "CONCLUIDO",
+                        data: {
+                            matchType: melhores.length > 0 ? (exactByOcr ? "exact" : "candidates") : "none",
+                            confidence: melhores.length > 0 ? (exactByOcr ? "high" : "medium") : "low",
+                            source: "ocr_objective",
+                            items: exactByOcr ? melhores.slice(0, 1) : melhores,
+                        },
+                    });
+                    return;
+                }
+            }
+
+            parentPort?.postMessage({
+                requestId: message.requestId,
+                status: "CONCLUIDO",
+                data: visualResult,
+            });
+        } catch (error) {
+            console.error("❌ Erro na busca por foto:", error);
+            parentPort?.postMessage({
+                requestId: message.requestId,
+                status: "CONCLUIDO",
+                data: {
+                    matchType: "none",
+                    confidence: "low",
+                    source: "error",
+                    items: [],
+                },
+            });
         }
-      }
     }
-
-    if (ocrText && sinaisOCR && temSinaisObjetivos(sinaisOCR)) {
-      const textCandidates = await buscarPorTextoInterno(ocrText, sinaisOCR);
-      const candidatosRelevantes = textCandidates.filter(
-        (i) => i.score >= OCR_TEXT_CANDIDATE_THRESHOLD || i.objectiveScore >= 0.45
-      );
-      const melhores = candidatosRelevantes.slice(0, 3).map((i) =>
-        formatarImovel(i, i.score, i.evidencias || ["Texto do print parecido com a base"])
-      );
-      const top = candidatosRelevantes[0];
-      const second = candidatosRelevantes[1];
-      const margin = top && second ? top.score - second.score : 1;
-      const exactByOcr =
-        Boolean(top) &&
-        temSinaisFortes(sinaisOCR) &&
-        top.objectiveScore >= 0.62 &&
-        (margin >= 0.18 || top.objectiveScore >= 0.90);
-
-      if (melhores.length > 0 || temSinaisFortes(sinaisOCR)) {
-        parentPort?.postMessage({
-          requestId: message.requestId,
-          status: "CONCLUIDO",
-          data: {
-            matchType: melhores.length > 0 ? (exactByOcr ? "exact" : "candidates") : "none",
-            confidence: melhores.length > 0 ? (exactByOcr ? "high" : "medium") : "low",
-            source: "ocr_objective",
-            items: exactByOcr ? melhores.slice(0, 1) : melhores,
-          },
-        });
-        return;
-      }
-    }
-
-    parentPort?.postMessage({
-      requestId: message.requestId,
-      status: "CONCLUIDO",
-      data: visualResult,
-    });
-  } catch (error) {
-    console.error("❌ Erro na busca por foto:", error);
-    parentPort?.postMessage({
-      requestId: message.requestId,
-      status: "CONCLUIDO",
-      data: {
-        matchType: "none",
-        confidence: "low",
-        source: "error",
-        items: [],
-      },
-    });
-  }
-}
 
     if (message.command === 'BUSCAR_SEMANTICA') {
         const pedido = message.text;
