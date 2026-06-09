@@ -4,8 +4,8 @@ import { AgentState } from "../../state/conversation-state";
 import { env } from "../../config/env";
 import { logger } from "../../utils/logger";
 import { searchPropertiesTool } from "../tools/search-properties";
+import { registerLeadTool } from '../tools/register-lead'
 import { findLastHumanContent, shouldForcePropertySearch } from "../../utils/search-intent";
-
 const llm = new ChatOpenAI({
     model: env.OPENAI_MODEL,
     temperature: env.OPEN_AI_TEMPERATURE,
@@ -13,7 +13,7 @@ const llm = new ChatOpenAI({
 })
 
 // 🔌 Conectamos a Ferramenta no Cérebro da Ana!
-const llmWithTools = llm.bindTools([searchPropertiesTool]);
+const llmWithTools = llm.bindTools([searchPropertiesTool, registerLeadTool]);
 
 const SYSTEM_PROMPT = `
 ## PERSONA E TOM DE VOZ
@@ -134,8 +134,30 @@ O [codigo] deve ser apenas numero, não coloque L nem V antes do código
 - Disponibilidade atual
 - Valor de condomínio, IPTU ou taxas não listadas
 Se perguntarem: "Não tenho essa informação disponível no momento. Vou registrar sua dúvida e um de nossos corretores entrará em contato para responder com precisão. Posso coletar seu nome e e-mail para agilizar o contato?"
-## IDENTIFICAÇÃO DO LEAD
-Após apresentar os imóveis, colete Nome e Email do cliente. Caso ele queira agendar visita, pergunte qual o melhor dia e horário.
+## IDENTIFICAÇÃO DO LEAD E REGISTRO NO CRM
+Antes de acionar registrar_lead, você precisa ter OBRIGATORIAMENTE:
+
+Nome do cliente (primeiro nome já basta)
+E-mail é OPCIONAL:
+
+Pergunte UMA VEZ: "E qual o seu e-mail para contato?"
+Se o cliente recusar, ignorar ou não responder -> registre sem e-mail.
+NUNCA invente e-mail fictício. NUNCA pergunte duas vezes.
+FLUXO:
+
+Cliente demonstra interesse (quer visitar, quer contato, quer mais opções, quer falar com corretor, pergunta financiamento).
+Pergunte o nome se ainda não tiver.
+Pergunte o e-mail UMA VEZ.
+Acione registrar_lead com o que tiver (nome é o único obrigatório).
+APÓS O RETORNO:
+
+LEAD_REGISTRADO -> "Ótimo! Um de nossos corretores vai entrar em contato em breve. Posso te ajudar com mais alguma coisa?"
+LEAD_FALHOU -> Confirme normalmente, sem mencionar erro.
+REGRAS:
+
+Acione registrar_lead UMA ÚNICA VEZ por conversa.
+ids_imoveis: apenas números (ex: L193 -> 193, V7052 -> 7052).
+celular: use o phoneNumber disponível no contexto da conversa.
 ## REGRAS DE OURO
 - Apresente no máximo 3 opções de uma vez.
 - Sempre termine com uma pergunta.
@@ -151,7 +173,9 @@ export const sdrNode = async (state: typeof AgentState.State) => {
     const intentContext = state.intent
         ? `\nO cliente iniciou o atendimento com a intenção clara de: ${state.intent === 'ALUGAR' ? 'ALUGUEL / LOCAÇÃO' : 'COMPRA / VENDA'}. Use isso como direcionamento principal da busca.`
         : '';
-    const dynamicPrompt = `${intentContext}\n${SYSTEM_PROMPT}`;
+    const phoneContext = `\nO número de telefone/celular do cliente é: ${state.phoneNumber}. Use este número exatamente para preencher o parâmetro 'celular' ao registrar o lead.`;
+    const dynamicPrompt = `${intentContext}${phoneContext}\n${SYSTEM_PROMPT}`;
+
 
     const messagesWithSystem = [
         new SystemMessage(dynamicPrompt),

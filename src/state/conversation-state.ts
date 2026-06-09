@@ -32,7 +32,7 @@ export const AgentState = Annotation.Root({
     }),
     currentAgent: Annotation<'RECEPCIONISTA' | 'SDR' | 'CAPTADOR'>({
         reducer: (_, novo) => novo,
-        default: () => 'RECEPCIONISTA',
+        default: () => 'SDR',
     }),
     intent: Annotation<'COMPRAR' | 'ALUGAR' | 'ANUNCIAR' | 'OUTROS' | null>({
         reducer: (_, novo) => novo,

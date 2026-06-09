@@ -46,6 +46,46 @@ export class NeppoWsClient {
         });
     }
 
+    private isReconnecting = false;
+
+    async reconnect() {
+        if (this.isReconnecting) return;
+
+        this.isReconnecting = true;
+        console.log('🔄 Iniciando fluxo de reconexão do WebSocket...');
+
+        try {
+            if (this.stompClient) {
+                await this.stompClient.deactivate();
+                this.stompClient = null;
+            }
+        } catch (err) {
+            console.error('⚠️ Erro ao desativar STOMP:', err);
+        }
+
+        await sleep(5000);
+
+        let success = false;
+        let attempts = 0;
+        const maxAttempts = 5;
+
+        while (!success && attempts < maxAttempts) {
+            attempts++;
+            console.log(`🔑 Tentativa de login/conexão ${attempts}/${maxAttempts}...`);
+            const loggedIn = await this.login();
+            if (loggedIn) {
+                this.botResource = Math.random().toString(36).substring(2, 10);
+                this.connectWebSocket();
+                success = true;
+                console.log('💚 Reconexão solicitada com sucesso!');
+            } else {
+                console.error(`❌ Falha ao reconectar após ${attempts} tentativas`);
+                await sleep(3000);
+            }
+        }
+        this.isReconnecting = false;
+    }
+
     async login() {
         console.log('🔄 Tentando fazer login como Agente Fantasma...');
         const passwordBase64 = Buffer.from('TesteTI123#').toString('base64');
@@ -106,6 +146,7 @@ export class NeppoWsClient {
             },
             onWebSocketClose: () => {
                 console.log('⚠️ Conexão WebSocket fechada.');
+                this.reconnect();
             }
         });
 
@@ -130,6 +171,7 @@ export class NeppoWsClient {
                 console.warn(`⚠️ WebSocket recebeu uma mensagem fora do padrão (não é JSON). Conteúdo: ${frame.body}`);
                 if (frame.body.includes('#FORCE_DISCONNECT')) {
                     console.error("🔴 A Neppo enviou um comando de desconexão forçada!");
+                    this.reconnect();
                 }
                 return;
             }

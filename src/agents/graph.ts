@@ -15,8 +15,9 @@ import { MemorySaver } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { searchPropertiesTool } from "./tools/search-properties";
 import { findLastHumanContent, shouldForcePropertySearch } from "../utils/search-intent";
+import { registerLeadTool } from './tools/register-lead'
 
-const toolsNode = new ToolNode([searchPropertiesTool]);
+const toolsNode = new ToolNode([searchPropertiesTool, registerLeadTool]);
 
 const routeAfterReception = (state: typeof AgentState.State) => {
     if (state.currentAgent === 'SDR') {
@@ -49,7 +50,7 @@ const workflow = new StateGraph(AgentState)
     .addNode("sdr", sdrNode)
     .addNode("captador", propertyScoutNode)
     .addNode("tools", toolsNode)
-    .addEdge(START, "reception")
+    .addEdge(START, "sdr")
     .addConditionalEdges("reception", routeAfterReception)
     .addConditionalEdges("sdr", shouldContinue)
     .addEdge("tools", "sdr")

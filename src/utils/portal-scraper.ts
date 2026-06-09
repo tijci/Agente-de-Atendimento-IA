@@ -195,7 +195,23 @@ async function fetchComPuppeteer(url: string): Promise<string | null> {
         logger.error({ err: err?.message, url }, '❌ [PORTAL-SCRAPER] Puppeteer falhou');
         return null;
     } finally {
-        await page?.close().catch(() => {}); // libera a aba mesmo em erro
+        await page?.close().catch(() => { }); // libera a aba mesmo em erro
+    }
+}
+
+
+function extractCodigoUrlJulioCasas(urlString: string): string | null {
+    try {
+        const url = new URL(urlString);
+        const val = url.searchParams.get('codigo');
+        if (val && /^[LV]?\d{3,8}$/i.test(val.trim())) {
+            const match = val.trim().match(/\d+/);
+            return match ? match[0] : null;
+        }
+
+        return null;
+    } catch (error) {
+        return null;
     }
 }
 
